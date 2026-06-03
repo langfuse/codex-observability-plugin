@@ -42,7 +42,7 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^25.9.1",
     "prettier": "^3.4.2",
     "tsdown": "^0.18.0",
     "typescript": "^5.7.2",
