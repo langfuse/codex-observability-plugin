@@ -4286,6 +4286,7 @@ const DEFAULTS = {
 	debug: false,
 	fail_on_error: false
 };
+const CodexAuthSchema = object({ tokens: object({ id_token: string().optional() }).optional() }).passthrough();
 function parseBoolean(value) {
 	if (typeof value === "boolean") return value;
 	if (typeof value !== "string") return void 0;
@@ -4353,6 +4354,30 @@ async function readConfigFile(file) {
 		return;
 	}
 }
+function readJwtPayload(token) {
+	const payload = token.split(".")[1];
+	if (!payload) return void 0;
+	try {
+		const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf-8"));
+		if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return void 0;
+		return parsed;
+	} catch {
+		return;
+	}
+}
+async function readCodexUserEmail(authFile) {
+	try {
+		const raw = JSON.parse(await fs.readFile(authFile, "utf-8"));
+		const token = CodexAuthSchema.parse(raw).tokens?.id_token;
+		if (!token) return void 0;
+		const email$1 = readJwtPayload(token)?.email;
+		if (typeof email$1 !== "string") return void 0;
+		const trimmed = email$1.trim();
+		return trimmed.length > 0 ? trimmed : void 0;
+	} catch {
+		return;
+	}
+}
 function getVar(suffix, env) {
 	return env[`LANGFUSE_CODEX_${suffix}`] ?? env[`LANGFUSE_${suffix}`];
 }
@@ -4372,14 +4397,20 @@ function readEnvConfig(env) {
 	}));
 }
 const getHomeDir = () => process.env.HOME ?? os$2.homedir();
+function getCodexAuthFile(home, env) {
+	const codexHome = env.CODEX_HOME?.trim();
+	return codexHome ? path.join(codexHome, "auth.json") : path.join(home, ".codex", "auth.json");
+}
 async function getConfig(options) {
 	const home = options?.home ?? getHomeDir();
 	const cwd = options?.cwd ?? process.cwd();
 	const env = options?.env ?? process.env;
 	const [globalConfig$1, localConfig] = await Promise.all([readConfigFile(path.join(home, ".codex", "langfuse.json")), readConfigFile(path.join(cwd, ".codex", "langfuse.json"))]);
 	const envConfig = readEnvConfig(env);
+	const codexUserId = globalConfig$1?.user_id ?? localConfig?.user_id ?? envConfig.user_id ? void 0 : await readCodexUserEmail(getCodexAuthFile(home, env));
 	return ConfigSchema.parse({
 		...DEFAULTS,
+		...codexUserId ? { user_id: codexUserId } : {},
 		...globalConfig$1,
 		...localConfig,
 		...envConfig

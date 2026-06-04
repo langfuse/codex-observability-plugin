@@ -90,7 +90,7 @@ Run a Codex turn, then open your Langfuse project to see the trace.
 | `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`           | Yes      | —                            | Langfuse secret key (`sk-lf-...`)                        |
 | `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`               | No       | `https://cloud.langfuse.com` | Langfuse host / data region                              |
 | `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT` | No       | —                            | Environment label for the traces (e.g. `production`)     |
-| `LANGFUSE_CODEX_USER_ID`                                      | No       | —                            | Attach a user id to all traces                           |
+| `LANGFUSE_CODEX_USER_ID`                                      | No       | Codex auth email, if found   | Attach a user id to all traces                           |
 | `LANGFUSE_CODEX_TAGS`                                         | No       | —                            | Tags for all traces (JSON array or comma-separated)      |
 | `LANGFUSE_CODEX_METADATA`                                     | No       | —                            | JSON object of metadata to attach to all traces          |
 | `LANGFUSE_CODEX_MAX_CHARS`                                    | No       | `20000`                      | Truncate inputs/outputs longer than this many characters |
@@ -115,7 +115,7 @@ Run a Codex turn, then open your Langfuse project to see the trace.
 | `secret_key`    | `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`           | —                            | Langfuse secret key               |
 | `base_url`      | `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`               | `https://cloud.langfuse.com` | Langfuse host                     |
 | `environment`   | `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT` | —                            | Environment label                 |
-| `user_id`       | `LANGFUSE_CODEX_USER_ID`                                      | —                            | User id for all traces            |
+| `user_id`       | `LANGFUSE_CODEX_USER_ID`                                      | Codex auth email, if found   | User id for all traces            |
 | `tags`          | `LANGFUSE_CODEX_TAGS`                                         | —                            | Tags for all traces               |
 | `metadata`      | `LANGFUSE_CODEX_METADATA`                                     | —                            | Metadata object for all traces    |
 | `max_chars`     | `LANGFUSE_CODEX_MAX_CHARS`                                    | `20000`                      | Input/output truncation threshold |
