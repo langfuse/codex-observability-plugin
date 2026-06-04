@@ -19,6 +19,11 @@ function makeTmpHome(file?: { rel: string; contents: unknown }): string {
   return dir;
 }
 
+function makeJwt(payload: unknown): string {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "none" })}.${encode(payload)}.`;
+}
+
 afterEach(() => {
   while (tmpDirs.length) {
     fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
@@ -66,6 +71,74 @@ describe("getConfig", () => {
     });
     expect(config.public_key).toBe("pk-codex");
     expect(config.secret_key).toBe("sk-standard");
+  });
+
+  it("uses the Codex auth email as the default user id when available", async () => {
+    const home = makeTmpHome({
+      rel: ".codex/auth.json",
+      contents: {
+        tokens: {
+          id_token: makeJwt({ email: "  user@example.com  " }),
+        },
+      },
+    });
+
+    const config = await getConfig({ home, cwd: emptyHome(), env: {} });
+
+    expect(config.user_id).toBe("user@example.com");
+  });
+
+  it("reads the Codex auth email from CODEX_HOME when set", async () => {
+    const codexHome = makeTmpHome({
+      rel: "auth.json",
+      contents: {
+        tokens: {
+          id_token: makeJwt({ email: "codex-home@example.com" }),
+        },
+      },
+    });
+
+    const config = await getConfig({
+      home: emptyHome(),
+      cwd: emptyHome(),
+      env: { CODEX_HOME: codexHome },
+    });
+
+    expect(config.user_id).toBe("codex-home@example.com");
+  });
+
+  it("ignores missing or malformed Codex auth email claims", async () => {
+    const home = makeTmpHome({
+      rel: ".codex/auth.json",
+      contents: {
+        tokens: {
+          id_token: makeJwt({ name: "Codex User" }),
+        },
+      },
+    });
+
+    const config = await getConfig({ home, cwd: emptyHome(), env: {} });
+
+    expect(config.user_id).toBeUndefined();
+  });
+
+  it("keeps explicit user id config ahead of the Codex auth email", async () => {
+    const home = makeTmpHome({
+      rel: ".codex/auth.json",
+      contents: {
+        tokens: {
+          id_token: makeJwt({ email: "codex@example.com" }),
+        },
+      },
+    });
+
+    const config = await getConfig({
+      home,
+      cwd: emptyHome(),
+      env: { LANGFUSE_CODEX_USER_ID: "configured-user" },
+    });
+
+    expect(config.user_id).toBe("configured-user");
   });
 
   it("parses tags (JSON array or comma-separated) and metadata JSON", async () => {

@@ -51,6 +51,16 @@ const DEFAULTS: Pick<Config, "enabled" | "base_url" | "max_chars" | "debug" | "f
   fail_on_error: false,
 };
 
+const CodexAuthSchema = z
+  .object({
+    tokens: z
+      .object({
+        id_token: z.string().optional(),
+      })
+      .optional(),
+  })
+  .passthrough();
+
 function parseBoolean(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
   if (typeof value !== "string") return undefined;
@@ -129,6 +139,36 @@ async function readConfigFile(file: string): Promise<Partial<Config> | undefined
   }
 }
 
+function readJwtPayload(token: string): Record<string, unknown> | undefined {
+  const payload = token.split(".")[1];
+  if (!payload) return undefined;
+
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf-8")) as unknown;
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readCodexUserEmail(authFile: string): Promise<string | undefined> {
+  try {
+    const raw = JSON.parse(await fs.readFile(authFile, "utf-8")) as unknown;
+    const auth = CodexAuthSchema.parse(raw);
+    const token = auth.tokens?.id_token;
+    if (!token) return undefined;
+
+    const email = readJwtPayload(token)?.email;
+    if (typeof email !== "string") return undefined;
+
+    const trimmed = email.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function getVar(suffix: string, env: Record<string, string | undefined>): string | undefined {
   return env[`LANGFUSE_CODEX_${suffix}`] ?? env[`LANGFUSE_${suffix}`];
 }
@@ -153,6 +193,11 @@ function readEnvConfig(env: Record<string, string | undefined>): Partial<Config>
 
 const getHomeDir = () => process.env.HOME ?? os.homedir();
 
+function getCodexAuthFile(home: string, env: Record<string, string | undefined>): string {
+  const codexHome = env.CODEX_HOME?.trim();
+  return codexHome ? path.join(codexHome, "auth.json") : path.join(home, ".codex", "auth.json");
+}
+
 export async function getConfig(options?: {
   home?: string;
   cwd?: string;
@@ -167,9 +212,14 @@ export async function getConfig(options?: {
     readConfigFile(path.join(cwd, ".codex", "langfuse.json")),
   ]);
   const envConfig = readEnvConfig(env);
+  const explicitUserId = globalConfig?.user_id ?? localConfig?.user_id ?? envConfig.user_id;
+  const codexUserId = explicitUserId
+    ? undefined
+    : await readCodexUserEmail(getCodexAuthFile(home, env));
 
   return ConfigSchema.parse({
     ...DEFAULTS,
+    ...(codexUserId ? { user_id: codexUserId } : {}),
     ...globalConfig,
     ...localConfig,
     ...envConfig,
