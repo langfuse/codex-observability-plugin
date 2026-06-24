@@ -138,4 +138,51 @@ describe("convertRollout", () => {
     await convertRollout(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
+
+  it("waits for a trailing in-progress turn instead of uploading a partial duplicate", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-in-progress.jsonl");
+
+    fs.writeFileSync(
+      file,
+      [
+        {
+          timestamp: "2026-06-03T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: "sess-in-progress" },
+        },
+        {
+          timestamp: "2026-06-03T12:00:01.000Z",
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "turn-in-progress" },
+        },
+        {
+          timestamp: "2026-06-03T12:00:01.200Z",
+          type: "turn_context",
+          payload: { model: "gpt-5.4" },
+        },
+        {
+          timestamp: "2026-06-03T12:00:01.300Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "hi" },
+        },
+        {
+          timestamp: "2026-06-03T12:00:02.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "working..." }],
+          },
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+    );
+
+    await convertRollout(file, { config: baseConfig });
+
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+    expect(fs.existsSync(`${file}.langfuse`)).toBe(false);
+  });
 });
