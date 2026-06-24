@@ -46823,8 +46823,9 @@ function parseSession(lines) {
 * The `Stop` hook fires after every Codex turn and re-reads the whole rollout
 * file, so completed turns would be re-uploaded each time. We record uploaded
 * turn ids in a sidecar file (`<rolloutFile>.langfuse`) and skip them on
-* subsequent invocations. In-progress (not-yet-completed) turns are uploaded
-* but intentionally not recorded, so they finalize on the next hook run.
+* subsequent invocations. In-progress (not-yet-completed) trailing turns are
+* skipped until Codex writes the completion marker, so a later hook invocation
+* uploads the final turn once instead of creating a partial duplicate.
 */
 async function loadUploadedTurnIds(rolloutFile) {
 	try {
@@ -47002,7 +47003,11 @@ async function convertRollout(rolloutFile, options) {
 	}
 	const uploaded = await loadUploadedTurnIds(rolloutFile);
 	for (const turn of turns) {
-		if (turn.completed && turn.turnId && uploaded.has(turn.turnId)) continue;
+		if (!turn.completed) {
+			if (turn.turnId) debugLog(`skipping in-progress turn ${turn.turnId}; waiting for completion`);
+			continue;
+		}
+		if (turn.turnId && uploaded.has(turn.turnId)) continue;
 		await propagateAttributes({
 			sessionId: sessionMeta.sessionId,
 			traceName: "Codex Turn",
@@ -47015,10 +47020,10 @@ async function convertRollout(rolloutFile, options) {
 				rolloutFile
 			});
 		});
-		if (turn.completed && turn.turnId) {
+		if (turn.turnId) {
 			uploaded.add(turn.turnId);
 			await markTurnUploaded(rolloutFile, turn.turnId);
-		} else if (turn.turnId) debugLog(`uploaded in-progress turn ${turn.turnId}; waiting for completion before sidecar mark`);
+		}
 	}
 }
 
