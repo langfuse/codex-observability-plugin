@@ -21216,9 +21216,9 @@ var init_logging_response_handler = __esmMin((() => {
 function createOtlpExportDelegate(components, settings) {
 	return new OTLPExportDelegate(components.transport, components.serializer, createLoggingPartialSuccessResponseHandler(), components.promiseHandler, settings.timeout);
 }
-var import_src$5, OTLPExportDelegate;
+var import_src$6, OTLPExportDelegate;
 var init_otlp_export_delegate = __esmMin((() => {
-	import_src$5 = require_src$8();
+	import_src$6 = require_src$8();
 	init_types();
 	init_logging_response_handler();
 	init_esm$2();
@@ -21241,7 +21241,7 @@ var init_otlp_export_delegate = __esmMin((() => {
 			this._diagLogger.debug("items to be sent", internalRepresentation);
 			if (this._promiseQueue.hasReachedLimit()) {
 				resultCallback({
-					code: import_src$5.ExportResultCode.FAILED,
+					code: import_src$6.ExportResultCode.FAILED,
 					error: /* @__PURE__ */ new Error("Concurrent export limit reached")
 				});
 				return;
@@ -21249,7 +21249,7 @@ var init_otlp_export_delegate = __esmMin((() => {
 			const serializedRequest = this._serializer.serializeRequest(internalRepresentation);
 			if (serializedRequest == null) {
 				resultCallback({
-					code: import_src$5.ExportResultCode.FAILED,
+					code: import_src$6.ExportResultCode.FAILED,
 					error: /* @__PURE__ */ new Error("Nothing to send")
 				});
 				return;
@@ -21261,24 +21261,24 @@ var init_otlp_export_delegate = __esmMin((() => {
 					} catch (e) {
 						this._diagLogger.warn("Export succeeded but could not deserialize response - is the response specification compliant?", e, response.data);
 					}
-					resultCallback({ code: import_src$5.ExportResultCode.SUCCESS });
+					resultCallback({ code: import_src$6.ExportResultCode.SUCCESS });
 					return;
 				} else if (response.status === "failure" && response.error) {
 					resultCallback({
-						code: import_src$5.ExportResultCode.FAILED,
+						code: import_src$6.ExportResultCode.FAILED,
 						error: response.error
 					});
 					return;
 				} else if (response.status === "retryable") resultCallback({
-					code: import_src$5.ExportResultCode.FAILED,
+					code: import_src$6.ExportResultCode.FAILED,
 					error: new OTLPExporterError("Export failed with retryable status")
 				});
 				else resultCallback({
-					code: import_src$5.ExportResultCode.FAILED,
+					code: import_src$6.ExportResultCode.FAILED,
 					error: new OTLPExporterError("Export failed with unknown error")
 				});
 			}, (reason) => resultCallback({
-				code: import_src$5.ExportResultCode.FAILED,
+				code: import_src$6.ExportResultCode.FAILED,
 				error: reason
 			})));
 		}
@@ -42519,12 +42519,12 @@ var init_shared_env_configuration = __esmMin((() => {
 //#endregion
 //#region ../../node_modules/.pnpm/@opentelemetry+otlp-exporter-base@0.205.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/otlp-exporter-base/build/esm/configuration/otlp-node-http-env-configuration.js
 function getStaticHeadersFromEnv(signalIdentifier) {
-	const signalSpecificRawHeaders = (0, import_src$4.getStringFromEnv)(`OTEL_EXPORTER_OTLP_${signalIdentifier}_HEADERS`);
-	const nonSignalSpecificRawHeaders = (0, import_src$4.getStringFromEnv)("OTEL_EXPORTER_OTLP_HEADERS");
-	const signalSpecificHeaders = (0, import_src$4.parseKeyPairsIntoRecord)(signalSpecificRawHeaders);
-	const nonSignalSpecificHeaders = (0, import_src$4.parseKeyPairsIntoRecord)(nonSignalSpecificRawHeaders);
+	const signalSpecificRawHeaders = (0, import_src$5.getStringFromEnv)(`OTEL_EXPORTER_OTLP_${signalIdentifier}_HEADERS`);
+	const nonSignalSpecificRawHeaders = (0, import_src$5.getStringFromEnv)("OTEL_EXPORTER_OTLP_HEADERS");
+	const signalSpecificHeaders = (0, import_src$5.parseKeyPairsIntoRecord)(signalSpecificRawHeaders);
+	const nonSignalSpecificHeaders = (0, import_src$5.parseKeyPairsIntoRecord)(nonSignalSpecificRawHeaders);
 	if (Object.keys(signalSpecificHeaders).length === 0 && Object.keys(nonSignalSpecificHeaders).length === 0) return;
-	return Object.assign({}, (0, import_src$4.parseKeyPairsIntoRecord)(nonSignalSpecificRawHeaders), (0, import_src$4.parseKeyPairsIntoRecord)(signalSpecificRawHeaders));
+	return Object.assign({}, (0, import_src$5.parseKeyPairsIntoRecord)(nonSignalSpecificRawHeaders), (0, import_src$5.parseKeyPairsIntoRecord)(signalSpecificRawHeaders));
 }
 function appendRootPathToUrlIfNeeded(url) {
 	try {
@@ -42552,12 +42552,12 @@ function appendResourcePathToUrl(url, path$1) {
 	return url;
 }
 function getNonSpecificUrlFromEnv(signalResourcePath) {
-	const envUrl = (0, import_src$4.getStringFromEnv)("OTEL_EXPORTER_OTLP_ENDPOINT");
+	const envUrl = (0, import_src$5.getStringFromEnv)("OTEL_EXPORTER_OTLP_ENDPOINT");
 	if (envUrl === void 0) return;
 	return appendResourcePathToUrl(envUrl, signalResourcePath);
 }
 function getSpecificUrlFromEnv(signalIdentifier) {
-	const envUrl = (0, import_src$4.getStringFromEnv)(`OTEL_EXPORTER_OTLP_${signalIdentifier}_ENDPOINT`);
+	const envUrl = (0, import_src$5.getStringFromEnv)(`OTEL_EXPORTER_OTLP_${signalIdentifier}_ENDPOINT`);
 	if (envUrl === void 0) return;
 	return appendRootPathToUrlIfNeeded(envUrl);
 }
@@ -42574,9 +42574,9 @@ function getNodeHttpConfigurationFromEnvironment(signalIdentifier, signalResourc
 		headers: wrapStaticHeadersInFunction(getStaticHeadersFromEnv(signalIdentifier))
 	};
 }
-var import_src$4;
+var import_src$5;
 var init_otlp_node_http_env_configuration = __esmMin((() => {
-	import_src$4 = require_src$8();
+	import_src$5 = require_src$8();
 	init_esm$2();
 	init_shared_env_configuration();
 	init_shared_configuration();
@@ -45169,9 +45169,9 @@ var require_src$2 = /* @__PURE__ */ __commonJSMin(((exports) => {
 
 //#endregion
 //#region ../../node_modules/.pnpm/@langfuse+otel@5.4.1_@opentelemetry+api@1.9.1_@opentelemetry+core@2.7.1_@opentelemetry+api@1._ekes344w3htofsunm64fqkhuni/node_modules/@langfuse/otel/dist/index.mjs
-var import_src$1 = require_src$9();
-var import_src$2 = require_src$4();
-var import_src$3 = require_src$2();
+var import_src$2 = require_src$9();
+var import_src$3 = require_src$4();
+var import_src$4 = require_src$2();
 var MediaService = class {
 	constructor(params) {
 		this.pendingMediaUploads = /* @__PURE__ */ new Set();
@@ -45427,7 +45427,7 @@ var LangfuseSpanProcessor = class {
 		const flushIntervalSeconds = (_g = params == null ? void 0 : params.flushInterval) != null ? _g : getEnv("LANGFUSE_FLUSH_INTERVAL");
 		const authHeaderValue = base64Encode(`${publicKey}:${secretKey}`);
 		const timeoutSeconds = (_i = params == null ? void 0 : params.timeout) != null ? _i : Number((_h = getEnv("LANGFUSE_TIMEOUT")) != null ? _h : 5);
-		const exporter = (_j = params == null ? void 0 : params.exporter) != null ? _j : new import_src$2.OTLPTraceExporter({
+		const exporter = (_j = params == null ? void 0 : params.exporter) != null ? _j : new import_src$3.OTLPTraceExporter({
 			url: `${baseUrl}/api/public/otel/v1/traces`,
 			headers: {
 				Authorization: `Basic ${authHeaderValue}`,
@@ -45438,7 +45438,7 @@ var LangfuseSpanProcessor = class {
 			},
 			timeoutMillis: timeoutSeconds * 1e3
 		});
-		this.processor = (params == null ? void 0 : params.exportMode) === "immediate" ? new import_src$3.SimpleSpanProcessor(exporter) : new import_src$3.BatchSpanProcessor(exporter, {
+		this.processor = (params == null ? void 0 : params.exportMode) === "immediate" ? new import_src$4.SimpleSpanProcessor(exporter) : new import_src$4.BatchSpanProcessor(exporter, {
 			maxExportBatchSize: flushAt ? Number(flushAt) : void 0,
 			scheduledDelayMillis: flushIntervalSeconds ? Number(flushIntervalSeconds) * 1e3 : void 0
 		});
@@ -45568,9 +45568,9 @@ ${JSON.stringify({
 			spanId: span.spanContext().spanId,
 			parentSpanId: (_b = (_a$3 = span.parentSpanContext) == null ? void 0 : _a$3.spanId) != null ? _b : null,
 			attributes: span.attributes,
-			startTime: new Date((0, import_src$1.hrTimeToMilliseconds)(span.startTime)),
-			endTime: new Date((0, import_src$1.hrTimeToMilliseconds)(span.endTime)),
-			durationMs: (0, import_src$1.hrTimeToMilliseconds)(span.duration),
+			startTime: new Date((0, import_src$2.hrTimeToMilliseconds)(span.startTime)),
+			endTime: new Date((0, import_src$2.hrTimeToMilliseconds)(span.endTime)),
+			durationMs: (0, import_src$2.hrTimeToMilliseconds)(span.duration),
 			kind: span.kind,
 			status: span.status,
 			resource: span.resource.attributes,
@@ -46062,7 +46062,8 @@ var require_src = /* @__PURE__ */ __commonJSMin(((exports) => {
 
 //#endregion
 //#region src/instrumentation.ts
-var import_src = require_src();
+var import_src = require_src$3();
+var import_src$1 = require_src();
 /**
 * Configure an isolated OpenTelemetry tracer provider wired to Langfuse.
 *
@@ -46075,7 +46076,25 @@ var import_src = require_src();
 * is converted in-process, so batching every span into one (or a few) requests
 * is far faster than one request per span — important for the hook's timeout
 * budget. `shutdown()` below calls `forceFlush()` before the process exits.
+*
+* Resource attributes: honor `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES`
+* when set (same contract as the Claude Code Python plugin), with a stable
+* default of `service.name=codex` so traces do not land as `unknown_service:node`.
 */
+function buildResource(config$1) {
+	const serviceName = process.env.OTEL_SERVICE_NAME?.trim() || "codex";
+	const attrs = { "service.name": serviceName };
+	const raw = process.env.OTEL_RESOURCE_ATTRIBUTES?.trim();
+	if (raw) for (const part of raw.split(",")) {
+		const idx = part.indexOf("=");
+		if (idx <= 0) continue;
+		const k = part.slice(0, idx).trim();
+		const v = part.slice(idx + 1).trim();
+		if (k) attrs[k] = v;
+	}
+	if (!attrs["deployment.environment.name"] && config$1.environment) attrs["deployment.environment.name"] = config$1.environment;
+	return (0, import_src.resourceFromAttributes)(attrs);
+}
 function setupInstrumentation(config$1) {
 	const spanProcessor = new LangfuseSpanProcessor({
 		publicKey: config$1.public_key,
@@ -46085,7 +46104,10 @@ function setupInstrumentation(config$1) {
 		exportMode: "batched",
 		shouldExportSpan: () => true
 	});
-	const provider = new import_src.NodeTracerProvider({ spanProcessors: [spanProcessor] });
+	const provider = new import_src$1.NodeTracerProvider({
+		resource: buildResource(config$1),
+		spanProcessors: [spanProcessor]
+	});
 	provider.register();
 	return { shutdown: async () => {
 		await spanProcessor.forceFlush();
