@@ -101,7 +101,7 @@ describe("convertRollout", () => {
     // One tool span, nested under a generation, with the captured command output.
     const tools = spans.filter((s) => obsType(s) === "tool");
     expect(tools).toHaveLength(1);
-    expect(tools[0].name).toBe("exec_command: ls");
+    expect(tools[0].name).toBe("exec_command");
     expect(attr(tools[0], "langfuse.observation.metadata.codex.tool_name")).toBe("exec_command");
     expect(attr(tools[0], "langfuse.observation.output")).toContain("file1.txt");
     expect(generations.map((g) => g.spanContext().spanId)).toContain(parentId(tools[0]));
@@ -149,16 +149,13 @@ describe("convertRollout", () => {
       .filter((s) => obsType(s) === "tool")
       .map((s) => s.name)
       .sort();
-    expect(toolNames).toEqual([
-      "linear.create_issue",
-      "local_shell: git status",
-      "web_search: langfuse codex plugin",
-    ]);
+    // Call arguments (command, query) stay out of the name — they are the input.
+    expect(toolNames).toEqual(["linear.create_issue", "local_shell", "web_search"]);
 
-    const webSearch = spans.find((s) => s.name.startsWith("web_search"))!;
+    const webSearch = spans.find((s) => s.name === "web_search")!;
     expect(attr(webSearch, "langfuse.observation.input")).toContain("langfuse codex plugin");
 
-    const shell = spans.find((s) => s.name.startsWith("local_shell"))!;
+    const shell = spans.find((s) => s.name === "local_shell")!;
     expect(attr(shell, "langfuse.observation.output")).toContain("clean");
   });
 

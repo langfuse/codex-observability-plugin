@@ -47011,50 +47011,16 @@ function buildGenerationOutput(step, clip) {
 	}));
 	return Object.keys(output).length > 0 ? output : void 0;
 }
-/** Tools that execute a shell command; the command makes a better span name. */
-const SHELL_TOOL_NAMES = new Set([
-	"shell",
-	"exec_command",
-	"local_shell",
-	"container.exec"
-]);
-/** Collapse a value to a short single line usable inside a span name. */
-function previewText(value, max = 60) {
-	const oneLine = value.trim().replace(/\s+/g, " ");
-	return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
-}
-function extractCommandText(args) {
-	if (args == null || typeof args !== "object") return void 0;
-	const cmd = args.command ?? args.cmd;
-	if (typeof cmd === "string" && cmd.trim()) return cmd;
-	if (Array.isArray(cmd) && cmd.length > 0 && cmd.every((c) => typeof c === "string")) {
-		const parts = cmd;
-		if (parts.length === 3 && /^(ba|z|fi)?sh$/.test(parts[0]) && /^-l?c$/.test(parts[1])) return parts[2];
-		return parts.join(" ");
-	}
-}
 /**
-* Observation name for a tool call: the tool name enriched with what it was
-* called with (shell command, search query, MCP server/tool), so the trace
-* tree shows *what* ran, not just which tool.
+* Observation name for a tool call. MCP calls use the clean `server.tool`
+* split from the mcp_tool_call_* events instead of the mangled function name;
+* everything else uses the plain tool name. Call arguments (shell command,
+* search query, …) stay out of the name — they belong to the observation
+* input.
 */
 function toolObservationName(tc) {
 	if (tc.mcp) return `${tc.mcp.server}.${tc.mcp.tool}`;
-	const name = tc.name || "tool";
-	if (SHELL_TOOL_NAMES.has(name)) {
-		const command = extractCommandText(tc.args);
-		if (command) return `${name}: ${previewText(command)}`;
-	}
-	if (name === "web_search" && tc.args != null && typeof tc.args === "object") {
-		const a = tc.args;
-		const detail = [
-			a.query,
-			a.url,
-			a.pattern
-		].find((v) => typeof v === "string" && v);
-		if (detail) return `${name}: ${previewText(detail)}`;
-	}
-	return name;
+	return tc.name || "tool";
 }
 /** Emit a single turn (and its subagents) as a Langfuse observation tree. */
 async function emitTurn(turn, sessionMeta, ctx) {

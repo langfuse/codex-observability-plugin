@@ -10,7 +10,7 @@ After each Codex turn, the plugin reads the session's rollout transcript and upl
 
 - **Turn** (`Codex Turn`, an [agent observation](https://langfuse.com/docs/observability/features/observation-types)) — one trace per turn, from your prompt to the final answer.
 - **Generations** — one per model response within the turn, named `LLM` (or `LLM Subagent` inside subagent threads), with the model recorded on the observation plus reasoning, assistant text, the tool calls it requested, and token usage.
-- **Tool calls** — shell commands, `apply_patch`, `spawn_agent`, MCP tools, web searches, etc., each with its input, output, and error status. Observation names include what was called — the shell command (`exec_command: git status`), the search query (`web_search: …`), or the MCP server and tool (`server.tool`) — and failed commands are flagged as errors.
+- **Tool calls** — shell commands, `apply_patch`, `spawn_agent`, MCP tools, web searches, etc., each with its input, output, and error status. MCP calls are named `server.tool`, and failed commands are flagged as errors.
 - **Subagents** — subagent threads are resolved from their own rollout files and nested under the spawning turn as `Codex Subagent Turn`.
 - **Sessions** — all turns from one Codex session are grouped via the Codex thread id, so you can replay the whole session in Langfuse's [Sessions](https://langfuse.com/docs/observability/features/sessions) view.
 
