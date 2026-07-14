@@ -4275,6 +4275,7 @@ const ConfigSchema = object({
 	tags: array(string()).optional(),
 	metadata: record(string(), string()).optional(),
 	trace_seed: string().optional(),
+	trace_scope: _enum(["turn", "session"]),
 	max_chars: number().int().positive(),
 	debug: boolean(),
 	fail_on_error: boolean()
@@ -4283,6 +4284,7 @@ const PartialConfigSchema = ConfigSchema.partial();
 const DEFAULTS = {
 	enabled: false,
 	base_url: "https://cloud.langfuse.com",
+	trace_scope: "turn",
 	max_chars: 2e4,
 	debug: false,
 	fail_on_error: false
@@ -4393,6 +4395,7 @@ function readEnvConfig(env) {
 		tags: parseTags(env.LANGFUSE_CODEX_TAGS),
 		metadata: parseMetadata(env.LANGFUSE_CODEX_METADATA),
 		trace_seed: env.LANGFUSE_CODEX_TRACE_SEED,
+		trace_scope: env.LANGFUSE_CODEX_TRACE_SCOPE,
 		max_chars: parseInteger(env.LANGFUSE_CODEX_MAX_CHARS),
 		debug: parseBoolean(env.LANGFUSE_CODEX_DEBUG),
 		fail_on_error: parseBoolean(env.LANGFUSE_CODEX_FAIL_ON_ERROR)
@@ -15269,7 +15272,7 @@ function propagateAttributes(params, fn) {
 	let context$1 = context.active();
 	const span = trace.getActiveSpan();
 	const asBaggage = (_a2 = params.asBaggage) != null ? _a2 : false;
-	const { userId, sessionId, metadata, version: version$1, tags, traceName, _internalExperiment } = params;
+	const { userId, sessionId, metadata, version: version$1, tags, traceName: traceName$1, _internalExperiment } = params;
 	if (userId) {
 		if (isValidPropagatedString({
 			value: userId,
@@ -15306,13 +15309,13 @@ function propagateAttributes(params, fn) {
 			asBaggage
 		});
 	}
-	if (traceName) {
+	if (traceName$1) {
 		if (isValidPropagatedString({
-			value: traceName,
+			value: traceName$1,
 			attributeName: "traceName"
 		})) context$1 = setPropagatedAttribute({
 			key: "traceName",
-			value: traceName,
+			value: traceName$1,
 			context: context$1,
 			span,
 			asBaggage
@@ -15381,10 +15384,10 @@ function getPropagatedAttributesFromContext(context$1) {
 		const spanKey = getSpanKeyForPropagatedKey("version");
 		propagatedAttributes[spanKey] = version$1;
 	}
-	const traceName = context$1.getValue(LangfuseOtelContextKeys["traceName"]);
-	if (traceName && typeof traceName === "string") {
+	const traceName$1 = context$1.getValue(LangfuseOtelContextKeys["traceName"]);
+	if (traceName$1 && typeof traceName$1 === "string") {
 		const spanKey = getSpanKeyForPropagatedKey("traceName");
-		propagatedAttributes[spanKey] = traceName;
+		propagatedAttributes[spanKey] = traceName$1;
 	}
 	const tags = context$1.getValue(LangfuseOtelContextKeys["tags"]);
 	if (tags && Array.isArray(tags)) {
@@ -46956,21 +46959,29 @@ async function findSubagentRollout(parentFile, threadId) {
 */
 const SEED_PARENT_SPAN_ID = "0123456789abcdef";
 /**
-* Derive the deterministic trace id for a turn from `config.trace_seed`.
+* Derive the deterministic trace id a turn should be pinned to.
 *
-* Main-thread turn N (1-based, rollout order):  createTraceId(`${seed}:${N}`)
-* Subagent-thread turn N:                       createTraceId(`${seed}:${threadId}:${N}`)
+* `trace_scope: "session"` — every turn of a thread shares one trace id, so the
+* session is a single trace whose top-level spans are its turns:
+*
+*   createTraceId(`codex-session:${threadId}`)   (`${seed}:${threadId}` with a seed)
+*
+* `trace_scope: "turn"` (default) — each turn is its own trace, and ids are only
+* pinned when `trace_seed` is set:
+*
+*   Main-thread turn N (1-based, rollout order):  createTraceId(`${seed}:${N}`)
+*   Subagent-thread turn N:                       createTraceId(`${seed}:${threadId}:${N}`)
 *
 * The main-thread form deliberately excludes the thread id so external systems
 * can precompute trace ids (hex(sha256(seed)).slice(0, 32)) before the Codex
-* thread exists. Returns `undefined` (auto-generated ids) when no seed is set
+* thread exists. Returns `undefined` (auto-generated ids) when no id is pinned
 * or derivation fails — the hook must never block an upload.
 */
 async function seededTraceParent(config$1, sessionMeta, turnNumber) {
-	if (!config$1.trace_seed) return void 0;
+	if (!(config$1.trace_scope === "session") && !config$1.trace_seed) return void 0;
 	try {
 		return {
-			traceId: await createTraceId(sessionMeta.isSubagentThread ? `${config$1.trace_seed}:${sessionMeta.sessionId}:${turnNumber}` : `${config$1.trace_seed}:${turnNumber}`),
+			traceId: await createTraceId(traceSeed(config$1, sessionMeta, turnNumber)),
 			spanId: SEED_PARENT_SPAN_ID,
 			traceFlags: TraceFlags.SAMPLED,
 			isRemote: true
@@ -46980,6 +46991,20 @@ async function seededTraceParent(config$1, sessionMeta, turnNumber) {
 		if (config$1.fail_on_error) throw error;
 		return;
 	}
+}
+/**
+* Trace name. Under `trace_scope: "session"` the trace spans the whole thread,
+* so it is named for the session rather than for whichever turn triggered the
+* upload; each turn keeps its own "Codex Turn" span inside it.
+*/
+function traceName(config$1, sessionMeta) {
+	const subagent = sessionMeta.isSubagentThread === true;
+	if (config$1.trace_scope === "session") return subagent ? "Codex Subagent Session" : "Codex Session";
+	return subagent ? "Codex Subagent Turn" : "Codex Turn";
+}
+function traceSeed(config$1, sessionMeta, turnNumber) {
+	if (config$1.trace_scope === "session") return config$1.trace_seed ? `${config$1.trace_seed}:${sessionMeta.sessionId}` : `codex-session:${sessionMeta.sessionId}`;
+	return sessionMeta.isSubagentThread ? `${config$1.trace_seed}:${sessionMeta.sessionId}:${turnNumber}` : `${config$1.trace_seed}:${turnNumber}`;
 }
 function toUsageDetails(usage) {
 	if (!usage) return void 0;
@@ -47121,7 +47146,7 @@ async function convertRollout(rolloutFile, options) {
 		const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
 		await propagateAttributes({
 			sessionId: sessionMeta.sessionId,
-			traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
+			traceName: traceName(options.config, sessionMeta),
 			...options.config.user_id ? { userId: options.config.user_id } : {},
 			...options.config.tags ? { tags: options.config.tags } : {},
 			...options.config.metadata ? { metadata: options.config.metadata } : {}

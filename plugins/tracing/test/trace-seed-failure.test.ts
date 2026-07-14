@@ -34,6 +34,7 @@ const baseConfig: Config = {
   debug: false,
   fail_on_error: false,
   trace_seed: "ci-run-42",
+  trace_scope: "turn",
 };
 
 const fixturesRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/sessions");

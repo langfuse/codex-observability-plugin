@@ -76,14 +76,22 @@ async function findSubagentRollout(
 const SEED_PARENT_SPAN_ID = "0123456789abcdef";
 
 /**
- * Derive the deterministic trace id for a turn from `config.trace_seed`.
+ * Derive the deterministic trace id a turn should be pinned to.
  *
- * Main-thread turn N (1-based, rollout order):  createTraceId(`${seed}:${N}`)
- * Subagent-thread turn N:                       createTraceId(`${seed}:${threadId}:${N}`)
+ * `trace_scope: "session"` — every turn of a thread shares one trace id, so the
+ * session is a single trace whose top-level spans are its turns:
+ *
+ *   createTraceId(`codex-session:${threadId}`)   (`${seed}:${threadId}` with a seed)
+ *
+ * `trace_scope: "turn"` (default) — each turn is its own trace, and ids are only
+ * pinned when `trace_seed` is set:
+ *
+ *   Main-thread turn N (1-based, rollout order):  createTraceId(`${seed}:${N}`)
+ *   Subagent-thread turn N:                       createTraceId(`${seed}:${threadId}:${N}`)
  *
  * The main-thread form deliberately excludes the thread id so external systems
  * can precompute trace ids (hex(sha256(seed)).slice(0, 32)) before the Codex
- * thread exists. Returns `undefined` (auto-generated ids) when no seed is set
+ * thread exists. Returns `undefined` (auto-generated ids) when no id is pinned
  * or derivation fails — the hook must never block an upload.
  */
 async function seededTraceParent(
@@ -91,13 +99,11 @@ async function seededTraceParent(
   sessionMeta: SessionMeta,
   turnNumber: number,
 ): Promise<SpanContext | undefined> {
-  if (!config.trace_seed) return undefined;
+  const sessionScoped = config.trace_scope === "session";
+  if (!sessionScoped && !config.trace_seed) return undefined;
   try {
-    const seed = sessionMeta.isSubagentThread
-      ? `${config.trace_seed}:${sessionMeta.sessionId}:${turnNumber}`
-      : `${config.trace_seed}:${turnNumber}`;
     return {
-      traceId: await createTraceId(seed),
+      traceId: await createTraceId(traceSeed(config, sessionMeta, turnNumber)),
       spanId: SEED_PARENT_SPAN_ID,
       traceFlags: TraceFlags.SAMPLED,
       isRemote: true,
@@ -107,6 +113,30 @@ async function seededTraceParent(
     if (config.fail_on_error) throw error;
     return undefined;
   }
+}
+
+/**
+ * Trace name. Under `trace_scope: "session"` the trace spans the whole thread,
+ * so it is named for the session rather than for whichever turn triggered the
+ * upload; each turn keeps its own "Codex Turn" span inside it.
+ */
+function traceName(config: Config, sessionMeta: SessionMeta): string {
+  const subagent = sessionMeta.isSubagentThread === true;
+  if (config.trace_scope === "session") {
+    return subagent ? "Codex Subagent Session" : "Codex Session";
+  }
+  return subagent ? "Codex Subagent Turn" : "Codex Turn";
+}
+
+function traceSeed(config: Config, sessionMeta: SessionMeta, turnNumber: number): string {
+  if (config.trace_scope === "session") {
+    return config.trace_seed
+      ? `${config.trace_seed}:${sessionMeta.sessionId}`
+      : `codex-session:${sessionMeta.sessionId}`;
+  }
+  return sessionMeta.isSubagentThread
+    ? `${config.trace_seed}:${sessionMeta.sessionId}:${turnNumber}`
+    : `${config.trace_seed}:${turnNumber}`;
 }
 
 function toUsageDetails(usage: TokenUsage | undefined): Record<string, number> | undefined {
@@ -328,7 +358,7 @@ export async function convertRollout(
     await propagateAttributes(
       {
         sessionId: sessionMeta.sessionId,
-        traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
+        traceName: traceName(options.config, sessionMeta),
         ...(options.config.user_id ? { userId: options.config.user_id } : {}),
         ...(options.config.tags ? { tags: options.config.tags } : {}),
         ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
