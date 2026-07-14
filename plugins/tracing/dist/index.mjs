@@ -46984,11 +46984,13 @@ async function seededTraceParent(config$1, sessionMeta, turnNumber) {
 function toUsageDetails(usage) {
 	if (!usage) return void 0;
 	const details = {};
-	if (typeof usage.input_tokens === "number") details.input = usage.input_tokens;
-	if (typeof usage.output_tokens === "number") details.output = usage.output_tokens;
+	const cachedInputTokens = usage.cached_input_tokens ?? 0;
+	const reasoningOutputTokens = usage.reasoning_output_tokens ?? 0;
+	if (typeof usage.input_tokens === "number") details.input = Math.max(usage.input_tokens - cachedInputTokens, 0);
+	if (cachedInputTokens > 0) details.cache_read_input_tokens = cachedInputTokens;
+	if (typeof usage.output_tokens === "number") details.output = Math.max(usage.output_tokens - reasoningOutputTokens, 0);
+	if (reasoningOutputTokens > 0) details.output_reasoning_tokens = reasoningOutputTokens;
 	if (typeof usage.total_tokens === "number") details.total = usage.total_tokens;
-	if (typeof usage.cached_input_tokens === "number") details.cache_read_input_tokens = usage.cached_input_tokens;
-	if (typeof usage.reasoning_output_tokens === "number") details.reasoning_tokens = usage.reasoning_output_tokens;
 	return Object.keys(details).length > 0 ? details : void 0;
 }
 /** Build a clip() that truncates long strings to `maxChars`. */
