@@ -92,11 +92,22 @@ describe("convertRollout", () => {
       expect(parentId(gen)).toBe(root!.spanContext().spanId);
       expect(attr(gen, "langfuse.observation.model.name")).toBe("gpt-5.4");
     }
-    // First generation carries token usage.
-    const usage = generations
-      .map((g) => attr(g, "langfuse.observation.usage_details"))
-      .find((u) => u.includes("120"));
-    expect(usage, "expected usage details with 120 total tokens").toBeTruthy();
+    // Usage buckets must be mutually exclusive for Langfuse cost inference.
+    const usageDetails = generations.map(
+      (g) => JSON.parse(attr(g, "langfuse.observation.usage_details")) as Record<string, number>,
+    );
+    expect(usageDetails).toContainEqual({
+      input: 100,
+      output: 15,
+      output_reasoning_tokens: 5,
+      total: 120,
+    });
+    expect(usageDetails).toContainEqual({
+      input: 100,
+      cache_read_input_tokens: 50,
+      output: 30,
+      total: 180,
+    });
 
     // One tool span, nested under a generation, with the captured command output.
     const tools = spans.filter((s) => obsType(s) === "tool");
