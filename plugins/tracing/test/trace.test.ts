@@ -26,7 +26,14 @@ const baseConfig: Config = {
   max_chars: 20_000,
   debug: false,
   fail_on_error: false,
+  trace_scope: "turn",
 };
+
+/**
+ * Placeholder parent span id the plugin pins seeded/session traces to — mirrored
+ * here on purpose so the test breaks if that contract silently changes.
+ */
+const SEED_PARENT_SPAN_ID = "0123456789abcdef";
 
 const fixturesRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/sessions");
 
@@ -171,6 +178,60 @@ describe("convertRollout", () => {
     exporter.reset();
     await convertRollout(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
+  });
+});
+
+describe("session-scoped traces (trace_scope: session)", () => {
+  const sessionConfig: Config = { ...baseConfig, trace_scope: "session" };
+
+  const turnRoots = () =>
+    exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "Codex Turn" || s.name === "Codex Subagent Turn")
+      .sort((a, b) => startMs(a) - startMs(b));
+
+  it("puts every turn of a thread in one trace keyed by the session id", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-two-turns-main.jsonl"), {
+      config: sessionConfig,
+    });
+
+    const roots = turnRoots();
+    expect(roots).toHaveLength(2);
+
+    // Both turns — and every span beneath them — share the session's trace id.
+    const expected = seededTraceId("codex-session:sess-two-turns");
+    const traceIds = new Set(exporter.getFinishedSpans().map((s) => s.spanContext().traceId));
+    expect([...traceIds]).toEqual([expected]);
+
+    // Each turn is still its own top-level span inside that trace, not nested
+    // in the preceding turn.
+    for (const root of roots) {
+      expect(obsType(root)).toBe("agent");
+      expect(parentId(root)).toBe(SEED_PARENT_SPAN_ID);
+    }
+    expect(roots[0].spanContext().spanId).not.toBe(parentId(roots[1]));
+  });
+
+  it("gives each thread its own trace, so sessions never collide", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-two-turns-main.jsonl"), {
+      config: sessionConfig,
+    });
+    await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), { config: sessionConfig });
+
+    const traceIds = new Set(turnRoots().map((s) => s.spanContext().traceId));
+    expect(traceIds.size).toBe(2);
+  });
+
+  it("combines with trace_seed so external systems can precompute the id", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-two-turns-main.jsonl"), {
+      config: { ...sessionConfig, trace_seed: "ci-run-42" },
+    });
+
+    const traceIds = new Set(turnRoots().map((s) => s.spanContext().traceId));
+    expect([...traceIds]).toEqual([seededTraceId("ci-run-42:sess-two-turns")]);
   });
 });
 

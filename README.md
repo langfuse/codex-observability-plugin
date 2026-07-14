@@ -83,20 +83,21 @@ Run a Codex turn, then open your Langfuse project to see the trace.
 
 ## Environment variables
 
-| Variable                                                      | Required | Default                      | Description                                                          |
-| ------------------------------------------------------------- | -------- | ---------------------------- | -------------------------------------------------------------------- |
-| `TRACE_TO_LANGFUSE`                                           | Yes      | `false`                      | Set to `"true"` to enable tracing                                    |
-| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_CODEX_PUBLIC_KEY`           | Yes      | —                            | Langfuse public key (`pk-lf-...`)                                    |
-| `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`           | Yes      | —                            | Langfuse secret key (`sk-lf-...`)                                    |
-| `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`               | No       | `https://cloud.langfuse.com` | Langfuse host / data region                                          |
-| `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT` | No       | —                            | Environment label for the traces (e.g. `production`)                 |
-| `LANGFUSE_CODEX_USER_ID`                                      | No       | Codex auth email, if found   | Attach a user id to all traces                                       |
-| `LANGFUSE_CODEX_TAGS`                                         | No       | —                            | Tags for all traces (JSON array or comma-separated)                  |
-| `LANGFUSE_CODEX_METADATA`                                     | No       | —                            | JSON object of metadata to attach to all traces                      |
-| `LANGFUSE_CODEX_TRACE_SEED`                                   | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids)) |
-| `LANGFUSE_CODEX_MAX_CHARS`                                    | No       | `20000`                      | Truncate inputs/outputs longer than this many characters             |
-| `LANGFUSE_CODEX_DEBUG`                                        | No       | `false`                      | Set to `"true"` for verbose logging to stderr                        |
-| `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | No       | `false`                      | Set to `"true"` to make hook upload errors fail the hook             |
+| Variable                                                      | Required | Default                      | Description                                                              |
+| ------------------------------------------------------------- | -------- | ---------------------------- | ------------------------------------------------------------------------ |
+| `TRACE_TO_LANGFUSE`                                           | Yes      | `false`                      | Set to `"true"` to enable tracing                                        |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_CODEX_PUBLIC_KEY`           | Yes      | —                            | Langfuse public key (`pk-lf-...`)                                        |
+| `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`           | Yes      | —                            | Langfuse secret key (`sk-lf-...`)                                        |
+| `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`               | No       | `https://cloud.langfuse.com` | Langfuse host / data region                                              |
+| `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT` | No       | —                            | Environment label for the traces (e.g. `production`)                     |
+| `LANGFUSE_CODEX_USER_ID`                                      | No       | Codex auth email, if found   | Attach a user id to all traces                                           |
+| `LANGFUSE_CODEX_TAGS`                                         | No       | —                            | Tags for all traces (JSON array or comma-separated)                      |
+| `LANGFUSE_CODEX_METADATA`                                     | No       | —                            | JSON object of metadata to attach to all traces                          |
+| `LANGFUSE_CODEX_TRACE_SEED`                                   | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids))     |
+| `LANGFUSE_CODEX_TRACE_SCOPE`                                  | No       | `turn`                       | `session` groups a whole thread into one trace ([details](#trace-scope)) |
+| `LANGFUSE_CODEX_MAX_CHARS`                                    | No       | `20000`                      | Truncate inputs/outputs longer than this many characters                 |
+| `LANGFUSE_CODEX_DEBUG`                                        | No       | `false`                      | Set to `"true"` for verbose logging to stderr                            |
+| `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | No       | `false`                      | Set to `"true"` to make hook upload errors fail the hook                 |
 
 ### Data regions
 
@@ -106,6 +107,22 @@ Run a Codex turn, then open your Langfuse project to see the trace.
 | 🇺🇸 US    | `https://us.cloud.langfuse.com`    |
 | 🇯🇵 Japan | `https://jp.cloud.langfuse.com`    |
 | ⚕️ HIPAA | `https://hipaa.cloud.langfuse.com` |
+
+## Trace scope
+
+By default (`trace_scope: "turn"`) every Codex turn becomes its own trace, and turns of the same thread are linked only through the Langfuse **session** id. Long sessions therefore produce a long run of near-identical `Codex Turn` rows in the traces list.
+
+Set `trace_scope` to `"session"` (or `LANGFUSE_CODEX_TRACE_SCOPE=session`) to collapse a thread into **one trace per Codex session** instead:
+
+```json
+{ "enabled": true, "trace_scope": "session" }
+```
+
+Each turn stays a top-level `Codex Turn` span inside that trace — with its generations, tool calls, and subagents nested underneath, exactly as before — so nothing is lost; the turns are grouped rather than scattered. The trace is named `Codex Session`, and its cost, token usage, and latency aggregate over the whole session.
+
+The trace id is derived from the Codex thread id (`hex(sha256("codex-session:<threadId>")).slice(0, 32)`), so every Stop-hook invocation of the same session appends to the same trace. Combined with `trace_seed`, the id becomes `hex(sha256("<seed>:<threadId>")).slice(0, 32)`.
+
+Trade-offs worth knowing: a session trace's latency spans the wall-clock life of the session (including the time you spent thinking between turns), and switching scope mid-session splits it — turns already uploaded keep their old traces, because the plugin never re-uploads a turn.
 
 ## Deterministic trace ids
 
@@ -159,6 +176,7 @@ The same works from JavaScript with the Langfuse SDK: `await createTraceId(`${se
 | `tags`          | `LANGFUSE_CODEX_TAGS`                                         | —                            | Tags for all traces               |
 | `metadata`      | `LANGFUSE_CODEX_METADATA`                                     | —                            | Metadata object for all traces    |
 | `trace_seed`    | `LANGFUSE_CODEX_TRACE_SEED`                                   | —                            | Deterministic trace-id seed       |
+| `trace_scope`   | `LANGFUSE_CODEX_TRACE_SCOPE`                                  | `turn`                       | `turn` or `session`               |
 | `max_chars`     | `LANGFUSE_CODEX_MAX_CHARS`                                    | `20000`                      | Input/output truncation threshold |
 | `debug`         | `LANGFUSE_CODEX_DEBUG`                                        | `false`                      | Verbose logging                   |
 | `fail_on_error` | `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | `false`                      | Fail the hook on upload errors    |

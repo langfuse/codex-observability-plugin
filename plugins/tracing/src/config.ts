@@ -33,6 +33,9 @@ export const ConfigSchema = z.object({
   metadata: z.record(z.string(), z.string()).optional(),
   // LANGFUSE_CODEX_TRACE_SEED — deterministic trace ids derived from this seed
   trace_seed: z.string().optional(),
+  // LANGFUSE_CODEX_TRACE_SCOPE — "turn": one trace per turn; "session": one
+  // trace per Codex thread, with each turn as a top-level span inside it
+  trace_scope: z.enum(["turn", "session"]),
   // LANGFUSE_CODEX_MAX_CHARS — truncate large inputs/outputs
   max_chars: z.number().int().positive(),
   // LANGFUSE_CODEX_DEBUG
@@ -45,9 +48,13 @@ export type Config = z.infer<typeof ConfigSchema>;
 
 const PartialConfigSchema = ConfigSchema.partial();
 
-const DEFAULTS: Pick<Config, "enabled" | "base_url" | "max_chars" | "debug" | "fail_on_error"> = {
+const DEFAULTS: Pick<
+  Config,
+  "enabled" | "base_url" | "trace_scope" | "max_chars" | "debug" | "fail_on_error"
+> = {
   enabled: false,
   base_url: "https://cloud.langfuse.com",
+  trace_scope: "turn",
   max_chars: 20_000,
   debug: false,
   fail_on_error: false,
@@ -187,6 +194,7 @@ function readEnvConfig(env: Record<string, string | undefined>): Partial<Config>
       tags: parseTags(env.LANGFUSE_CODEX_TAGS),
       metadata: parseMetadata(env.LANGFUSE_CODEX_METADATA),
       trace_seed: env.LANGFUSE_CODEX_TRACE_SEED,
+      trace_scope: env.LANGFUSE_CODEX_TRACE_SCOPE,
       max_chars: parseInteger(env.LANGFUSE_CODEX_MAX_CHARS),
       debug: parseBoolean(env.LANGFUSE_CODEX_DEBUG),
       fail_on_error: parseBoolean(env.LANGFUSE_CODEX_FAIL_ON_ERROR),
