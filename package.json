@@ -46,7 +46,7 @@
     "prettier": "^3.4.2",
     "tsdown": "^0.18.0",
     "typescript": "^5.7.2",
-    "vitest": "^4.0.0"
+    "vitest": "^4.1.9"
   },
   "engines": {
     "node": ">=22"
