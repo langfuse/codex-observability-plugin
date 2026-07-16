@@ -47117,6 +47117,10 @@ async function convertRollout(rolloutFile, options) {
 	const uploaded = await loadUploadedTurnIds(rolloutFile);
 	for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
 		const turn = turns[turnIndex];
+		if (!turn.completed) {
+			debugLog(`skipping incomplete turn ${turn.turnId ?? "(unknown)"}`);
+			continue;
+		}
 		if (turn.completed && turn.turnId && uploaded.has(turn.turnId)) continue;
 		const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
 		await propagateAttributes({
@@ -47132,10 +47136,10 @@ async function convertRollout(rolloutFile, options) {
 				seededParent
 			});
 		});
-		if (turn.completed && turn.turnId) {
+		if (turn.turnId) {
 			uploaded.add(turn.turnId);
 			await markTurnUploaded(rolloutFile, turn.turnId);
-		} else if (turn.turnId) debugLog(`uploaded in-progress turn ${turn.turnId}; waiting for completion before sidecar mark`);
+		}
 	}
 }
 
