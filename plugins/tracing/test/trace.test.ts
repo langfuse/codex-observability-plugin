@@ -13,7 +13,13 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { Config } from "../src/config.js";
-import { convertRollout } from "../src/trace.js";
+import {
+  billingBucket,
+  convertRollout,
+  hasZeroIncrementalCost,
+  type BillingBucket,
+} from "../src/trace.js";
+import type { ModelStep, RateLimitsSnapshot } from "../src/types.js";
 
 const exporter = new InMemorySpanExporter();
 let provider: NodeTracerProvider;
@@ -65,6 +71,109 @@ afterAll(async () => {
 
 beforeEach(() => {
   exporter.reset();
+});
+
+const rateLimits = (
+  planType: string,
+  primaryUsedPercent: number | undefined,
+  options: {
+    secondaryUsedPercent?: number;
+    hasCredits?: boolean;
+  } = {},
+): RateLimitsSnapshot => ({
+  plan_type: planType,
+  primary: primaryUsedPercent === undefined ? null : { used_percent: primaryUsedPercent },
+  secondary:
+    options.secondaryUsedPercent === undefined
+      ? null
+      : { used_percent: options.secondaryUsedPercent },
+  credits: options.hasCredits === undefined ? null : { has_credits: options.hasCredits },
+});
+
+const modelStep = (
+  after: RateLimitsSnapshot | undefined,
+  before?: RateLimitsSnapshot,
+): ModelStep => ({
+  startTime: 0,
+  endTime: 1,
+  toolCalls: [],
+  rateLimitsBefore: before,
+  rateLimitsAfter: after,
+});
+
+describe("seat-aware billing", () => {
+  it.each<{
+    name: string;
+    step: ModelStep;
+    bucket: BillingBucket;
+    zeroIncrementalCost: boolean;
+  }>([
+    {
+      name: "standard seat below its allowance",
+      step: modelStep(rateLimits("team", 42)),
+      bucket: "included",
+      zeroIncrementalCost: true,
+    },
+    {
+      name: "generation crossing the allowance boundary",
+      step: modelStep(rateLimits("team", 100, { hasCredits: true }), rateLimits("team", 99)),
+      bucket: "mixed",
+      zeroIncrementalCost: false,
+    },
+    {
+      name: "first observed generation at the boundary with credits",
+      step: modelStep(rateLimits("team", 100, { hasCredits: true })),
+      bucket: "mixed",
+      zeroIncrementalCost: false,
+    },
+    {
+      name: "generation after the allowance is exhausted with credits",
+      step: modelStep(rateLimits("team", 100, { hasCredits: true }), rateLimits("team", 100)),
+      bucket: "metered",
+      zeroIncrementalCost: false,
+    },
+    {
+      name: "explicitly non-credit continuation at the limit",
+      step: modelStep(rateLimits("team", 100, { hasCredits: false }), rateLimits("team", 100)),
+      bucket: "limit_reached",
+      zeroIncrementalCost: true,
+    },
+    {
+      name: "usage-based seat",
+      step: modelStep(rateLimits("self_serve_business_usage_based", 12)),
+      bucket: "metered",
+      zeroIncrementalCost: false,
+    },
+    {
+      name: "secondary allowance exhausted",
+      step: modelStep(
+        rateLimits("team", 50, { secondaryUsedPercent: 100, hasCredits: true }),
+        rateLimits("team", 49, { secondaryUsedPercent: 100 }),
+      ),
+      bucket: "metered",
+      zeroIncrementalCost: false,
+    },
+    {
+      name: "unsupported plan",
+      step: modelStep(rateLimits("future_plan", 10)),
+      bucket: "unknown",
+      zeroIncrementalCost: false,
+    },
+    {
+      name: "included plan without an absolute allowance snapshot",
+      step: modelStep({
+        plan_type: "business",
+        primary: null,
+        secondary: null,
+        credits: { has_credits: true, unlimited: true },
+      }),
+      bucket: "unknown",
+      zeroIncrementalCost: false,
+    },
+  ])("classifies $name", ({ step, bucket, zeroIncrementalCost }) => {
+    expect(billingBucket(step)).toBe(bucket);
+    expect(hasZeroIncrementalCost(bucket)).toBe(zeroIncrementalCost);
+  });
 });
 
 describe("convertRollout", () => {

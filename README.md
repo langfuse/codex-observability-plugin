@@ -21,12 +21,15 @@ Interrupted turns (where you cancel mid-response) are still uploaded and flagged
 
 Codex writes its current plan and rate-limit snapshot into each token-usage event. The plugin uses that snapshot to distinguish actual incremental cost from the API-equivalent value of included usage:
 
-- `included`: the fixed-seat allowance is below 100%; explicit generation cost is `$0`.
+- `included`: every reported fixed-seat allowance is below 100%; explicit generation cost is `$0`.
 - `metered`: the seat is usage-based, or the prior snapshot already showed an exhausted allowance and workspace credits are available; Langfuse infers cost from the model and exclusive token buckets.
-- `mixed`: the generation reached 100%, so it may straddle included and metered usage; Langfuse inference is retained rather than claiming an exact split.
-- `limit_reached` or `unknown`: the plugin lacks enough evidence to override inferred cost.
+- `mixed`: the generation reached 100%, so it may straddle included and metered usage; Langfuse conservatively prices the full generation rather than claiming an exact split.
+- `limit_reached`: the allowance is exhausted and Codex explicitly reports that no credits are available; permitted active-turn continuation remains `$0` incremental cost.
+- `unknown`: the plugin lacks enough evidence to override inferred cost, including an unsupported plan or a plan without an absolute allowance snapshot.
 
-Generation metadata includes `codex.billing_bucket`, `codex.plan_type`, `codex.rate_limit_used_percent`, `codex.rate_limit_remaining_percent`, the allowance window and reset time, and whether workspace credits are available. This supports per-user allowance-utilization reporting without converting model-weighted capacity into misleading raw “unused tokens.” Workspace billing exports remain the authority for purchased-credit totals and invoice reconciliation.
+Generation metadata includes `codex.billing_bucket`, `codex.plan_type`, primary and secondary allowance percentages, window and reset times, and workspace-credit availability. This supports per-user allowance-utilization reporting without converting model-weighted capacity into misleading raw “unused tokens.” Workspace billing exports remain the authority for purchased-credit totals and invoice reconciliation.
+
+Langfuse generation cost represents incremental spend: included usage is `$0`, while purchased-credit usage retains model-derived cost. The plugin does not allocate a fixed seat subscription across individual generations. Fully loaded seat allocation and effective-rate estimates require observations across a complete billing or allowance period and belong in downstream reporting.
 
 Codex reports cached input as a subset of input tokens. The plugin subtracts cached input from the uncached `input` bucket before export because Langfuse flat usage buckets are mutually exclusive. Reasoning-output tokens remain available as `codex.reasoning_output_tokens` metadata while `output` retains the provider-billed output total.
 

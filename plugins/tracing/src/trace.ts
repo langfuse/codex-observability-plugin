@@ -123,7 +123,7 @@ function toUsageDetails(usage: TokenUsage | undefined): Record<string, number> |
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
-type BillingBucket = "included" | "metered" | "mixed" | "limit_reached" | "unknown";
+export type BillingBucket = "included" | "metered" | "mixed" | "limit_reached" | "unknown";
 
 const INCLUDED_PLAN_TYPES = new Set(["plus", "pro", "prolite", "team", "business"]);
 const USAGE_BASED_PLAN_TYPES = new Set([
@@ -131,27 +131,42 @@ const USAGE_BASED_PLAN_TYPES = new Set([
   "enterprise_cbp_usage_based",
 ]);
 
-function billingBucket(step: ModelStep): BillingBucket {
+export function billingBucket(step: ModelStep): BillingBucket {
   const after = step.rateLimitsAfter;
   const planType = after?.plan_type;
   if (!after || !planType) return "unknown";
   if (USAGE_BASED_PLAN_TYPES.has(planType)) return "metered";
   if (!INCLUDED_PLAN_TYPES.has(planType)) return "unknown";
 
-  const usedAfter = after.primary?.used_percent;
-  if (typeof usedAfter !== "number") return "unknown";
-  if (usedAfter < 100) return "included";
+  const limitNames = ["primary", "secondary"] as const;
+  const observedLimits = limitNames.filter((name) => typeof after[name]?.used_percent === "number");
+  if (observedLimits.length === 0) return "unknown";
 
-  const usedBefore = step.rateLimitsBefore?.primary?.used_percent;
-  if (typeof usedBefore === "number" && usedBefore < 100) return "mixed";
-  if (after.credits?.has_credits) return typeof usedBefore === "number" ? "metered" : "mixed";
-  return "limit_reached";
+  const exhaustedLimits = observedLimits.filter((name) => after[name]!.used_percent! >= 100);
+  if (exhaustedLimits.length === 0) return "included";
+
+  const priorUsage = exhaustedLimits.map((name) => step.rateLimitsBefore?.[name]?.used_percent);
+  if (priorUsage.some((usedPercent) => typeof usedPercent === "number" && usedPercent < 100)) {
+    return "mixed";
+  }
+
+  const hasUnknownPriorUsage = priorUsage.some((usedPercent) => typeof usedPercent !== "number");
+  if (hasUnknownPriorUsage && after.credits?.has_credits === true) return "mixed";
+  if (after.credits?.has_credits === true) return "metered";
+  if (after.credits?.has_credits === false) return "limit_reached";
+  return "unknown";
+}
+
+export function hasZeroIncrementalCost(bucket: BillingBucket): boolean {
+  return bucket === "included" || bucket === "limit_reached";
 }
 
 function billingMetadata(step: ModelStep, bucket: BillingBucket): Record<string, unknown> {
   const rateLimits = step.rateLimitsAfter;
   const primary = rateLimits?.primary;
+  const secondary = rateLimits?.secondary;
   const usedPercent = primary?.used_percent;
+  const secondaryUsedPercent = secondary?.used_percent;
   return {
     "codex.billing_bucket": bucket,
     ...(rateLimits?.plan_type ? { "codex.plan_type": rateLimits.plan_type } : {}),
@@ -168,8 +183,26 @@ function billingMetadata(step: ModelStep, bucket: BillingBucket): Record<string,
     ...(typeof primary?.resets_at === "number"
       ? { "codex.rate_limit_resets_at": primary.resets_at }
       : {}),
+    ...(typeof secondaryUsedPercent === "number"
+      ? {
+          "codex.secondary_rate_limit_used_percent": secondaryUsedPercent,
+          "codex.secondary_rate_limit_remaining_percent": Math.max(0, 100 - secondaryUsedPercent),
+        }
+      : {}),
+    ...(typeof secondary?.window_minutes === "number"
+      ? { "codex.secondary_rate_limit_window_minutes": secondary.window_minutes }
+      : {}),
+    ...(typeof secondary?.resets_at === "number"
+      ? { "codex.secondary_rate_limit_resets_at": secondary.resets_at }
+      : {}),
     ...(typeof rateLimits?.credits?.has_credits === "boolean"
       ? { "codex.credits_available": rateLimits.credits.has_credits }
+      : {}),
+    ...(typeof rateLimits?.credits?.unlimited === "boolean"
+      ? { "codex.credits_unlimited": rateLimits.credits.unlimited }
+      : {}),
+    ...(rateLimits?.rate_limit_reached_type
+      ? { "codex.rate_limit_reached_type": rateLimits.rate_limit_reached_type }
       : {}),
     ...(typeof step.usage?.reasoning_output_tokens === "number"
       ? { "codex.reasoning_output_tokens": step.usage.reasoning_output_tokens }
@@ -279,7 +312,7 @@ async function emitTurn(
         output: buildGenerationOutput(step, clip),
         model: turn.model,
         usageDetails: toUsageDetails(step.usage),
-        costDetails: bucket === "included" ? { total: 0 } : undefined,
+        costDetails: hasZeroIncrementalCost(bucket) ? { total: 0 } : undefined,
         metadata: { "codex.step_index": i, ...billingMetadata(step, bucket) },
       },
       {
