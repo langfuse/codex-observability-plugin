@@ -92,11 +92,38 @@ describe("convertRollout", () => {
       expect(parentId(gen)).toBe(root!.spanContext().spanId);
       expect(attr(gen, "langfuse.observation.model.name")).toBe("gpt-5.4");
     }
-    // First generation carries token usage.
-    const usage = generations
-      .map((g) => attr(g, "langfuse.observation.usage_details"))
-      .find((u) => u.includes("120"));
-    expect(usage, "expected usage details with 120 total tokens").toBeTruthy();
+    const orderedGenerations = generations.sort((a, b) => startMs(a) - startMs(b));
+    expect(JSON.parse(attr(orderedGenerations[0], "langfuse.observation.usage_details"))).toEqual({
+      input: 100,
+      output: 20,
+      total: 120,
+      input_cache_read: 0,
+    });
+    expect(attr(orderedGenerations[0], "langfuse.observation.metadata.codex.billing_bucket")).toBe(
+      "included",
+    );
+    expect(
+      attr(
+        orderedGenerations[0],
+        "langfuse.observation.metadata.codex.rate_limit_remaining_percent",
+      ),
+    ).toBe("58");
+    expect(JSON.parse(attr(orderedGenerations[0], "langfuse.observation.cost_details"))).toEqual({
+      total: 0,
+    });
+
+    // Codex input_tokens includes cached_input_tokens. Langfuse flat usage
+    // buckets must be exclusive or inferred model cost counts the cache twice.
+    expect(JSON.parse(attr(orderedGenerations[1], "langfuse.observation.usage_details"))).toEqual({
+      input: 100,
+      output: 30,
+      total: 180,
+      input_cache_read: 50,
+    });
+    expect(attr(orderedGenerations[1], "langfuse.observation.metadata.codex.billing_bucket")).toBe(
+      "mixed",
+    );
+    expect(attr(orderedGenerations[1], "langfuse.observation.cost_details")).toBe("");
 
     // One tool span, nested under a generation, with the captured command output.
     const tools = spans.filter((s) => obsType(s) === "tool");

@@ -13,8 +13,22 @@ After each Codex turn, the plugin reads the session's rollout transcript and upl
 - **Tool calls** — shell commands, `apply_patch`, `spawn_agent`, MCP tools, web searches, etc., each with its input, output, and error status. MCP calls are named `server.tool`, and failed commands are flagged as errors.
 - **Subagents** — subagent threads are resolved from their own rollout files and nested under the spawning turn as `Codex Subagent Turn`.
 - **Sessions** — all turns from one Codex session are grouped via the Codex thread id, so you can replay the whole session in Langfuse's [Sessions](https://langfuse.com/docs/observability/features/sessions) view.
+- **Seat-aware cost** — on Plus, Pro, and standard Business/Team seats, generations that are clearly within the included Codex allowance are recorded with `$0` incremental cost. Usage-based seats and generations after the allowance is exhausted retain Langfuse's model-based cost.
 
 Interrupted turns (where you cancel mid-response) are still uploaded and flagged as interrupted.
+
+### Cost and allowance metadata
+
+Codex writes its current plan and rate-limit snapshot into each token-usage event. The plugin uses that snapshot to distinguish actual incremental cost from the API-equivalent value of included usage:
+
+- `included`: the fixed-seat allowance is below 100%; explicit generation cost is `$0`.
+- `metered`: the seat is usage-based, or the prior snapshot already showed an exhausted allowance and workspace credits are available; Langfuse infers cost from the model and exclusive token buckets.
+- `mixed`: the generation reached 100%, so it may straddle included and metered usage; Langfuse inference is retained rather than claiming an exact split.
+- `limit_reached` or `unknown`: the plugin lacks enough evidence to override inferred cost.
+
+Generation metadata includes `codex.billing_bucket`, `codex.plan_type`, `codex.rate_limit_used_percent`, `codex.rate_limit_remaining_percent`, the allowance window and reset time, and whether workspace credits are available. This supports per-user allowance-utilization reporting without converting model-weighted capacity into misleading raw “unused tokens.” Workspace billing exports remain the authority for purchased-credit totals and invoice reconciliation.
+
+Codex reports cached input as a subset of input tokens. The plugin subtracts cached input from the uncached `input` bucket before export because Langfuse flat usage buckets are mutually exclusive. Reasoning-output tokens remain available as `codex.reasoning_output_tokens` metadata while `output` retains the provider-billed output total.
 
 ## Prerequisites
 

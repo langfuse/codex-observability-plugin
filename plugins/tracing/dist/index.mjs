@@ -46677,6 +46677,7 @@ function parseSession(lines) {
 	let turn = null;
 	let step = null;
 	let toolCallsById = /* @__PURE__ */ new Map();
+	let lastRateLimits;
 	let lastTimestamp = Date.now();
 	function newStep(startTime) {
 		return {
@@ -46687,12 +46688,15 @@ function parseSession(lines) {
 	}
 	const ensureTurn = (ts) => turn ??= newTurn(ts);
 	const ensureStep = (ts) => step ??= newStep(ts);
-	const closeStep = (ts, usage) => {
+	const closeStep = (ts, usage, rateLimitsAfter) => {
 		if (!step) return;
 		step.endTime = Math.max(step.endTime, ts);
 		if (usage) step.usage = usage;
+		if (lastRateLimits) step.rateLimitsBefore = lastRateLimits;
+		if (rateLimitsAfter) step.rateLimitsAfter = rateLimitsAfter;
 		turn.steps.push(step);
 		step = null;
+		if (rateLimitsAfter) lastRateLimits = rateLimitsAfter;
 	};
 	const finishTurn = (ts, opts) => {
 		if (!turn) return;
@@ -46825,7 +46829,7 @@ function parseSession(lines) {
 			} else if (et === "agent_message" && typeof p.message === "string") turn.lastAgentMessage = p.message;
 			else if (et === "token_count") {
 				if (p.info?.total_token_usage) turn.totalUsage = p.info.total_token_usage;
-				closeStep(ts, p.info?.last_token_usage ?? void 0);
+				closeStep(ts, p.info?.last_token_usage ?? void 0, p.rate_limits ?? void 0);
 			} else if (et === "task_complete") finishTurn(ts, {
 				completed: true,
 				aborted: false
@@ -46984,12 +46988,51 @@ async function seededTraceParent(config$1, sessionMeta, turnNumber) {
 function toUsageDetails(usage) {
 	if (!usage) return void 0;
 	const details = {};
-	if (typeof usage.input_tokens === "number") details.input = usage.input_tokens;
+	if (typeof usage.input_tokens === "number") details.input = Math.max(0, usage.input_tokens - (usage.cached_input_tokens ?? 0));
 	if (typeof usage.output_tokens === "number") details.output = usage.output_tokens;
 	if (typeof usage.total_tokens === "number") details.total = usage.total_tokens;
-	if (typeof usage.cached_input_tokens === "number") details.cache_read_input_tokens = usage.cached_input_tokens;
-	if (typeof usage.reasoning_output_tokens === "number") details.reasoning_tokens = usage.reasoning_output_tokens;
+	if (typeof usage.cached_input_tokens === "number") details.input_cache_read = usage.cached_input_tokens;
 	return Object.keys(details).length > 0 ? details : void 0;
+}
+const INCLUDED_PLAN_TYPES = new Set([
+	"plus",
+	"pro",
+	"prolite",
+	"team",
+	"business"
+]);
+const USAGE_BASED_PLAN_TYPES = new Set(["self_serve_business_usage_based", "enterprise_cbp_usage_based"]);
+function billingBucket(step) {
+	const after = step.rateLimitsAfter;
+	const planType = after?.plan_type;
+	if (!after || !planType) return "unknown";
+	if (USAGE_BASED_PLAN_TYPES.has(planType)) return "metered";
+	if (!INCLUDED_PLAN_TYPES.has(planType)) return "unknown";
+	const usedAfter = after.primary?.used_percent;
+	if (typeof usedAfter !== "number") return "unknown";
+	if (usedAfter < 100) return "included";
+	const usedBefore = step.rateLimitsBefore?.primary?.used_percent;
+	if (typeof usedBefore === "number" && usedBefore < 100) return "mixed";
+	if (after.credits?.has_credits) return typeof usedBefore === "number" ? "metered" : "mixed";
+	return "limit_reached";
+}
+function billingMetadata(step, bucket) {
+	const rateLimits = step.rateLimitsAfter;
+	const primary = rateLimits?.primary;
+	const usedPercent = primary?.used_percent;
+	return {
+		"codex.billing_bucket": bucket,
+		...rateLimits?.plan_type ? { "codex.plan_type": rateLimits.plan_type } : {},
+		...rateLimits?.limit_id ? { "codex.rate_limit_id": rateLimits.limit_id } : {},
+		...typeof usedPercent === "number" ? {
+			"codex.rate_limit_used_percent": usedPercent,
+			"codex.rate_limit_remaining_percent": Math.max(0, 100 - usedPercent)
+		} : {},
+		...typeof primary?.window_minutes === "number" ? { "codex.rate_limit_window_minutes": primary.window_minutes } : {},
+		...typeof primary?.resets_at === "number" ? { "codex.rate_limit_resets_at": primary.resets_at } : {},
+		...typeof rateLimits?.credits?.has_credits === "boolean" ? { "codex.credits_available": rateLimits.credits.has_credits } : {},
+		...typeof step.usage?.reasoning_output_tokens === "number" ? { "codex.reasoning_output_tokens": step.usage.reasoning_output_tokens } : {}
+	};
 }
 /** Build a clip() that truncates long strings to `maxChars`. */
 function makeClip(maxChars) {
@@ -47048,12 +47091,17 @@ async function emitTurn(turn, sessionMeta, ctx) {
 	let previousToolResults = void 0;
 	for (let i = 0; i < turn.steps.length; i++) {
 		const step = turn.steps[i];
+		const bucket = billingBucket(step);
 		const generation = startObservation(isSubagent ? "LLM Subagent" : "LLM", {
 			input: i === 0 ? turn.userInput != null ? clip(turn.userInput) : void 0 : previousToolResults,
 			output: buildGenerationOutput(step, clip),
 			model: turn.model,
 			usageDetails: toUsageDetails(step.usage),
-			metadata: { "codex.step_index": i }
+			costDetails: bucket === "included" ? { total: 0 } : void 0,
+			metadata: {
+				"codex.step_index": i,
+				...billingMetadata(step, bucket)
+			}
 		}, {
 			asType: "generation",
 			startTime: new Date(step.startTime),

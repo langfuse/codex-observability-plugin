@@ -118,6 +118,25 @@ export type TokenUsage = {
   reasoning_output_tokens?: number;
 };
 
+export type RateLimitWindow = {
+  used_percent?: number;
+  window_minutes?: number | null;
+  resets_at?: number | null;
+};
+
+export type RateLimitsSnapshot = {
+  limit_id?: string | null;
+  primary?: RateLimitWindow | null;
+  secondary?: RateLimitWindow | null;
+  credits?: {
+    has_credits?: boolean;
+    unlimited?: boolean;
+    balance?: string | null;
+  } | null;
+  plan_type?: string | null;
+  rate_limit_reached_type?: string | null;
+};
+
 export type EventMsgPayload = {
   type: string;
   turn_id?: string | null;
@@ -128,6 +147,7 @@ export type EventMsgPayload = {
     last_token_usage?: TokenUsage;
     model_context_window?: number;
   } | null;
+  rate_limits?: RateLimitsSnapshot | null;
   /** collab_agent_spawn_end */
   new_thread_id?: string | null;
   /** mcp_tool_call_begin / mcp_tool_call_end */
@@ -196,6 +216,8 @@ export type ModelStep = {
   text?: string;
   toolCalls: ToolCall[];
   usage?: TokenUsage;
+  rateLimitsBefore?: RateLimitsSnapshot;
+  rateLimitsAfter?: RateLimitsSnapshot;
 };
 
 /** A fully assembled Codex turn, ready to convert into Langfuse observations. */

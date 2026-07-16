@@ -47,6 +47,7 @@ describe("parseSession", () => {
     expect(step1.reasoning).toBe("I'll list files with ls.");
     expect(step1.toolCalls).toHaveLength(1);
     expect(step1.usage?.total_tokens).toBe(120);
+    expect(step1.rateLimitsAfter?.primary?.used_percent).toBe(42);
 
     const tool = step1.toolCalls[0];
     expect(tool.name).toBe("exec_command");
@@ -58,6 +59,8 @@ describe("parseSession", () => {
 
     expect(step2.text).toBe("There are two files: file1.txt and file2.txt.");
     expect(step2.toolCalls).toHaveLength(0);
+    expect(step2.rateLimitsBefore?.primary?.used_percent).toBe(42);
+    expect(step2.rateLimitsAfter?.primary?.used_percent).toBe(100);
   });
 
   it("captures subagent threads, tool errors, and interruption", () => {

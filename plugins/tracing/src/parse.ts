@@ -2,6 +2,7 @@ import type {
   EventMsgPayload,
   MessageContentPart,
   ModelStep,
+  RateLimitsSnapshot,
   ResponseItemFunctionCall,
   ResponseItemFunctionCallOutput,
   ResponseItemCustomToolCall,
@@ -116,6 +117,7 @@ export function parseSession(lines: RolloutLine[]): {
   let turn: MutableTurn | null = null;
   let step: ModelStep | null = null;
   let toolCallsById = new Map<string, ToolCall>();
+  let lastRateLimits: RateLimitsSnapshot | undefined;
   let lastTimestamp = Date.now();
 
   function newStep(startTime: number): ModelStep {
@@ -125,12 +127,15 @@ export function parseSession(lines: RolloutLine[]): {
   const ensureTurn = (ts: number): MutableTurn => (turn ??= newTurn(ts));
   const ensureStep = (ts: number) => (step ??= newStep(ts));
 
-  const closeStep = (ts: number, usage?: TokenUsage) => {
+  const closeStep = (ts: number, usage?: TokenUsage, rateLimitsAfter?: RateLimitsSnapshot) => {
     if (!step) return;
     step.endTime = Math.max(step.endTime, ts);
     if (usage) step.usage = usage;
+    if (lastRateLimits) step.rateLimitsBefore = lastRateLimits;
+    if (rateLimitsAfter) step.rateLimitsAfter = rateLimitsAfter;
     turn!.steps.push(step);
     step = null;
+    if (rateLimitsAfter) lastRateLimits = rateLimitsAfter;
   };
 
   const finishTurn = (ts: number, opts: { completed: boolean; aborted: boolean }) => {
@@ -299,7 +304,7 @@ export function parseSession(lines: RolloutLine[]): {
         turn!.lastAgentMessage = p.message;
       } else if (et === "token_count") {
         if (p.info?.total_token_usage) turn!.totalUsage = p.info.total_token_usage;
-        closeStep(ts, p.info?.last_token_usage ?? undefined);
+        closeStep(ts, p.info?.last_token_usage ?? undefined, p.rate_limits ?? undefined);
       } else if (et === "task_complete") {
         finishTurn(ts, { completed: true, aborted: false });
       } else if (et === "turn_aborted") {
