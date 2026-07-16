@@ -317,6 +317,16 @@ export async function convertRollout(
 
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
+    // A Stop hook can observe the trailing source turn before Codex has
+    // appended its completion event. Exporting that provisional state and then
+    // exporting the completed state creates two independent OTEL observation
+    // trees (and therefore duplicate Langfuse cost/tool data). Wait for a
+    // completed or aborted lifecycle event; a later hook invocation will
+    // export the finalized source turn exactly once through the ledger.
+    if (!turn.completed) {
+      debugLog(`skipping incomplete turn ${turn.turnId ?? "(unknown)"}`);
+      continue;
+    }
     if (turn.completed && turn.turnId && uploaded.has(turn.turnId)) {
       continue; // already uploaded in a previous hook invocation
     }
@@ -342,15 +352,11 @@ export async function convertRollout(
       },
     );
 
-    // Only mark completed turns as uploaded; an in-progress trailing turn is
-    // re-uploaded (and finalized) on the next hook invocation.
-    if (turn.completed && turn.turnId) {
+    // Only completed source turns reach this point and receive a durable
+    // ledger entry after their finalized export succeeds.
+    if (turn.turnId) {
       uploaded.add(turn.turnId);
       await markTurnUploaded(rolloutFile, turn.turnId);
-    } else if (turn.turnId) {
-      debugLog(
-        `uploaded in-progress turn ${turn.turnId}; waiting for completion before sidecar mark`,
-      );
     }
   }
 }
