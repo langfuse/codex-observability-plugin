@@ -172,6 +172,41 @@ describe("convertRollout", () => {
     await convertRollout(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
+
+  it("defers an incomplete trailing turn until its completed export", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-two-turns-main.jsonl");
+    const completedLines = fs.readFileSync(file, "utf-8").trimEnd().split("\n");
+    const completionLine = completedLines.at(-1)!;
+
+    // Isolate turn-b: turn-a is already finalized and should not affect either
+    // condition. The first pass intentionally lacks turn-b's task_complete.
+    fs.writeFileSync(`${file}.langfuse`, "turn-a\n");
+    fs.writeFileSync(file, `${completedLines.slice(0, -1).join("\n")}\n`);
+
+    await convertRollout(file, { config: baseConfig });
+    expect(
+      exporter
+        .getFinishedSpans()
+        .filter((span) => span.name === "Codex Turn")
+        .filter((span) => attr(span, "langfuse.observation.metadata.codex.turn_id") === "turn-b"),
+    ).toHaveLength(0);
+    expect(fs.readFileSync(`${file}.langfuse`, "utf-8").trim().split("\n")).toEqual(["turn-a"]);
+
+    exporter.reset();
+    fs.appendFileSync(file, `${completionLine}\n`);
+    await convertRollout(file, { config: baseConfig });
+    expect(
+      exporter
+        .getFinishedSpans()
+        .filter((span) => span.name === "Codex Turn")
+        .filter((span) => attr(span, "langfuse.observation.metadata.codex.turn_id") === "turn-b"),
+    ).toHaveLength(1);
+    expect(fs.readFileSync(`${file}.langfuse`, "utf-8").trim().split("\n")).toEqual([
+      "turn-a",
+      "turn-b",
+    ]);
+  });
 });
 
 describe("deterministic trace ids (trace_seed)", () => {

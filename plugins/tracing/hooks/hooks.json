@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-observability-plugin/tracing/0.1.0/dist/index.mjs\"",
+            "command": "node \"${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-observability-plugin/tracing/0.1.1/dist/index.mjs\"",
             "timeout": 30,
             "statusMessage": "Uploading Codex trace to Langfuse"
           }
