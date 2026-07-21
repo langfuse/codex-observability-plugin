@@ -45,19 +45,20 @@ export async function runHook(): Promise<void> {
   }
 
   const instrumentation = setupInstrumentation(config);
+  let failure: unknown;
   try {
     await convertRollout(hookInput.transcript_path, { config });
   } catch (error) {
     debugLog("failed to convert rollout:", error);
-    if (config.fail_on_error) throw error;
-  } finally {
-    try {
-      await instrumentation.shutdown();
-    } catch (error) {
-      debugLog("error during flush/shutdown:", error);
-      if (config.fail_on_error) throw error;
-    }
+    if (config.fail_on_error) failure = error;
   }
+  try {
+    await instrumentation.shutdown();
+  } catch (error) {
+    debugLog("error during flush/shutdown:", error);
+    if (config.fail_on_error && failure === undefined) failure = error;
+  }
+  if (failure !== undefined) throw failure;
 }
 
 runHook().catch((error) => {

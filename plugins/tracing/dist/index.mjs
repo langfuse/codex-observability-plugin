@@ -47177,19 +47177,20 @@ async function runHook() {
 		return;
 	}
 	const instrumentation = setupInstrumentation(config$1);
+	let failure;
 	try {
 		await convertRollout(hookInput.transcript_path, { config: config$1 });
 	} catch (error) {
 		debugLog("failed to convert rollout:", error);
-		if (config$1.fail_on_error) throw error;
-	} finally {
-		try {
-			await instrumentation.shutdown();
-		} catch (error) {
-			debugLog("error during flush/shutdown:", error);
-			if (config$1.fail_on_error) throw error;
-		}
+		if (config$1.fail_on_error) failure = error;
 	}
+	try {
+		await instrumentation.shutdown();
+	} catch (error) {
+		debugLog("error during flush/shutdown:", error);
+		if (config$1.fail_on_error && failure === void 0) failure = error;
+	}
+	if (failure !== void 0) throw failure;
 }
 runHook().catch((error) => {
 	if (process.env.LANGFUSE_CODEX_DEBUG === "true") console.error("[langfuse-codex] fatal:", error);
