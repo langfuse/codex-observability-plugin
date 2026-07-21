@@ -107,6 +107,7 @@ export type ResponseItem =
 
 export type TurnContextPayload = {
   model?: string;
+  service_tier?: string | null;
   [key: string]: unknown;
 };
 
@@ -127,6 +128,11 @@ export type EventMsgPayload = {
     total_token_usage?: TokenUsage;
     last_token_usage?: TokenUsage;
     model_context_window?: number;
+  } | null;
+  /** thread_settings_applied */
+  thread_settings?: {
+    service_tier?: string | null;
+    [key: string]: unknown;
   } | null;
   /** collab_agent_spawn_end */
   new_thread_id?: string | null;
@@ -204,6 +210,7 @@ export type Turn = {
   startTime: number;
   endTime: number;
   model?: string;
+  serviceTier?: string;
   invocationParams?: Record<string, unknown>;
   userInput?: string;
   finalOutput?: string;

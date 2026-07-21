@@ -124,6 +124,16 @@ function toUsageDetails(usage: TokenUsage | undefined): Record<string, number> |
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
+function serviceTierUsageKey(serviceTier: string | undefined): string | undefined {
+  const normalized = serviceTier
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!normalized || normalized === "default" || normalized === "standard") return undefined;
+  return `codex_service_tier_${normalized}`;
+}
+
 type Clip = {
   (value: string): string;
   (value: unknown): unknown;
@@ -210,9 +220,15 @@ async function emitTurn(
   );
 
   let previousToolResults: unknown = undefined;
+  const serviceTier = turn.serviceTier ?? ctx.config.service_tier;
+  const tierUsageKey = serviceTierUsageKey(serviceTier);
 
   for (let i = 0; i < turn.steps.length; i++) {
     const step = turn.steps[i];
+    const usageDetails = toUsageDetails(step.usage);
+    if (usageDetails && tierUsageKey && typeof usageDetails.total === "number") {
+      usageDetails[tierUsageKey] = 1;
+    }
     const generation = startObservation(
       isSubagent ? "LLM Subagent" : "LLM",
       {
@@ -224,8 +240,11 @@ async function emitTurn(
             : previousToolResults,
         output: buildGenerationOutput(step, clip),
         model: turn.model,
-        usageDetails: toUsageDetails(step.usage),
-        metadata: { "codex.step_index": i },
+        usageDetails,
+        metadata: {
+          "codex.step_index": i,
+          ...(serviceTier ? { "codex.service_tier": serviceTier } : {}),
+        },
       },
       {
         asType: "generation",

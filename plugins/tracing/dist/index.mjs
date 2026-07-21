@@ -4275,6 +4275,7 @@ const ConfigSchema = object({
 	tags: array(string()).optional(),
 	metadata: record(string(), string()).optional(),
 	trace_seed: string().optional(),
+	service_tier: string().optional(),
 	max_chars: number().int().positive(),
 	debug: boolean(),
 	fail_on_error: boolean()
@@ -4379,6 +4380,18 @@ async function readCodexUserEmail(authFile) {
 		return;
 	}
 }
+async function readCodexServiceTier(configFile) {
+	try {
+		const config$1 = await fs.readFile(configFile, "utf-8");
+		for (const line of config$1.split("\n")) {
+			if (/^\s*\[/.test(line)) break;
+			const match = /^\s*service_tier\s*=\s*["']([^"']+)["']/.exec(line);
+			if (match) return match[1];
+		}
+	} catch {
+		return;
+	}
+}
 function getVar(suffix, env) {
 	return env[`LANGFUSE_CODEX_${suffix}`] ?? env[`LANGFUSE_${suffix}`];
 }
@@ -4393,26 +4406,36 @@ function readEnvConfig(env) {
 		tags: parseTags(env.LANGFUSE_CODEX_TAGS),
 		metadata: parseMetadata(env.LANGFUSE_CODEX_METADATA),
 		trace_seed: env.LANGFUSE_CODEX_TRACE_SEED,
+		service_tier: env.LANGFUSE_CODEX_SERVICE_TIER,
 		max_chars: parseInteger(env.LANGFUSE_CODEX_MAX_CHARS),
 		debug: parseBoolean(env.LANGFUSE_CODEX_DEBUG),
 		fail_on_error: parseBoolean(env.LANGFUSE_CODEX_FAIL_ON_ERROR)
 	}));
 }
 const getHomeDir = () => process.env.HOME ?? os$2.homedir();
+function getCodexHome(home, env) {
+	return env.CODEX_HOME?.trim() || path.join(home, ".codex");
+}
 function getCodexAuthFile(home, env) {
-	const codexHome = env.CODEX_HOME?.trim();
-	return codexHome ? path.join(codexHome, "auth.json") : path.join(home, ".codex", "auth.json");
+	return path.join(getCodexHome(home, env), "auth.json");
 }
 async function getConfig(options) {
 	const home = options?.home ?? getHomeDir();
 	const cwd = options?.cwd ?? process.cwd();
 	const env = options?.env ?? process.env;
-	const [globalConfig$1, localConfig] = await Promise.all([readConfigFile(path.join(home, ".codex", "langfuse.json")), readConfigFile(path.join(cwd, ".codex", "langfuse.json"))]);
+	const [globalConfig$1, localConfig, globalCodexServiceTier, localCodexServiceTier] = await Promise.all([
+		readConfigFile(path.join(home, ".codex", "langfuse.json")),
+		readConfigFile(path.join(cwd, ".codex", "langfuse.json")),
+		readCodexServiceTier(path.join(getCodexHome(home, env), "config.toml")),
+		readCodexServiceTier(path.join(cwd, ".codex", "config.toml"))
+	]);
 	const envConfig = readEnvConfig(env);
 	const codexUserId = globalConfig$1?.user_id ?? localConfig?.user_id ?? envConfig.user_id ? void 0 : await readCodexUserEmail(getCodexAuthFile(home, env));
 	return ConfigSchema.parse({
 		...DEFAULTS,
 		...codexUserId ? { user_id: codexUserId } : {},
+		...globalCodexServiceTier ? { service_tier: globalCodexServiceTier } : {},
+		...localCodexServiceTier ? { service_tier: localCodexServiceTier } : {},
 		...globalConfig$1,
 		...localConfig,
 		...envConfig
@@ -46650,7 +46673,7 @@ function extractToolError(payload) {
 	if (streams) return streams;
 	if (typeof payload.exit_code === "number") return `Exit code: ${payload.exit_code}`;
 }
-function newTurn(startTime) {
+function newTurn(startTime, serviceTier) {
 	return {
 		turnId: void 0,
 		startTime,
@@ -46658,7 +46681,8 @@ function newTurn(startTime) {
 		steps: [],
 		subagentThreadIds: [],
 		completed: false,
-		aborted: false
+		aborted: false,
+		serviceTier
 	};
 }
 /**
@@ -46677,6 +46701,7 @@ function parseSession(lines) {
 	let turn = null;
 	let step = null;
 	let toolCallsById = /* @__PURE__ */ new Map();
+	let lastServiceTier;
 	let lastTimestamp = Date.now();
 	function newStep(startTime) {
 		return {
@@ -46685,7 +46710,7 @@ function parseSession(lines) {
 			toolCalls: []
 		};
 	}
-	const ensureTurn = (ts) => turn ??= newTurn(ts);
+	const ensureTurn = (ts) => turn ??= newTurn(ts, lastServiceTier);
 	const ensureStep = (ts) => step ??= newStep(ts);
 	const closeStep = (ts, usage) => {
 		if (!step) return;
@@ -46724,7 +46749,12 @@ function parseSession(lines) {
 		}
 		if (line.type === "turn_context") {
 			const t = ensureTurn(ts);
-			t.model = line.payload.model ?? t.model;
+			const p = line.payload;
+			t.model = p.model ?? t.model;
+			if (typeof p.service_tier === "string") {
+				lastServiceTier = p.service_tier;
+				t.serviceTier = p.service_tier;
+			}
 			t.invocationParams = line.payload;
 			continue;
 		}
@@ -46810,12 +46840,20 @@ function parseSession(lines) {
 		if (line.type === "event_msg") {
 			const p = line.payload;
 			const et = p.type;
+			if (et === "thread_settings_applied") {
+				const serviceTier = p.thread_settings?.service_tier;
+				if (typeof serviceTier === "string") {
+					lastServiceTier = serviceTier;
+					if (turn) turn.serviceTier = serviceTier;
+				}
+				continue;
+			}
 			if (et === "task_started") {
 				if (turn) finishTurn(ts, {
 					completed: false,
 					aborted: false
 				});
-				turn = newTurn(ts);
+				turn = newTurn(ts, lastServiceTier);
 				turn.turnId = typeof p.turn_id === "string" ? p.turn_id : void 0;
 				continue;
 			}
@@ -46991,6 +47029,11 @@ function toUsageDetails(usage) {
 	if (typeof usage.reasoning_output_tokens === "number") details.reasoning_tokens = usage.reasoning_output_tokens;
 	return Object.keys(details).length > 0 ? details : void 0;
 }
+function serviceTierUsageKey(serviceTier) {
+	const normalized = serviceTier?.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+	if (!normalized || normalized === "default" || normalized === "standard") return void 0;
+	return `codex_service_tier_${normalized}`;
+}
 /** Build a clip() that truncates long strings to `maxChars`. */
 function makeClip(maxChars) {
 	function clip(value) {
@@ -47046,14 +47089,21 @@ async function emitTurn(turn, sessionMeta, ctx) {
 		parentSpanContext: ctx.parentObservation?.otelSpan.spanContext() ?? ctx.seededParent
 	});
 	let previousToolResults = void 0;
+	const serviceTier = turn.serviceTier ?? ctx.config.service_tier;
+	const tierUsageKey = serviceTierUsageKey(serviceTier);
 	for (let i = 0; i < turn.steps.length; i++) {
 		const step = turn.steps[i];
+		const usageDetails = toUsageDetails(step.usage);
+		if (usageDetails && tierUsageKey && typeof usageDetails.total === "number") usageDetails[tierUsageKey] = 1;
 		const generation = startObservation(isSubagent ? "LLM Subagent" : "LLM", {
 			input: i === 0 ? turn.userInput != null ? clip(turn.userInput) : void 0 : previousToolResults,
 			output: buildGenerationOutput(step, clip),
 			model: turn.model,
-			usageDetails: toUsageDetails(step.usage),
-			metadata: { "codex.step_index": i }
+			usageDetails,
+			metadata: {
+				"codex.step_index": i,
+				...serviceTier ? { "codex.service_tier": serviceTier } : {}
+			}
 		}, {
 			asType: "generation",
 			startTime: new Date(step.startTime),
