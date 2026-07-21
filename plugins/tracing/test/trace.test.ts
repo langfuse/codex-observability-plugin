@@ -172,6 +172,25 @@ describe("convertRollout", () => {
     await convertRollout(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
+
+  it("emits service-tier metadata and a generic Langfuse pricing selector", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), {
+      config: { ...baseConfig, service_tier: "priority" },
+    });
+
+    const generation = exporter
+      .getFinishedSpans()
+      .filter((span) => obsType(span) === "generation")
+      .find((span) => attr(span, "langfuse.observation.usage_details").includes('"total":120'));
+
+    expect(generation).toBeDefined();
+    expect(JSON.parse(attr(generation!, "langfuse.observation.usage_details"))).toMatchObject({
+      total: 120,
+      codex_service_tier_priority: 1,
+    });
+    expect(attr(generation!, "langfuse.observation.metadata.codex.service_tier")).toBe("priority");
+  });
 });
 
 describe("deterministic trace ids (trace_seed)", () => {

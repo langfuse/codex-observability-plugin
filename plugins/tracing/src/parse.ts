@@ -13,6 +13,7 @@ import type {
   TokenUsage,
   ToolCall,
   Turn,
+  TurnContextPayload,
 } from "./types.js";
 import { isPrimitive, toText } from "./utils.js";
 
@@ -84,7 +85,7 @@ function extractToolError(payload: EventMsgPayload): string | undefined {
 /** A turn that is still being assembled. */
 type MutableTurn = Turn & { lastAgentMessage?: string; userInputFallback?: string };
 
-function newTurn(startTime: number): MutableTurn {
+function newTurn(startTime: number, serviceTier: string | undefined): MutableTurn {
   return {
     turnId: undefined,
     startTime,
@@ -93,6 +94,7 @@ function newTurn(startTime: number): MutableTurn {
     subagentThreadIds: [],
     completed: false,
     aborted: false,
+    serviceTier,
   };
 }
 
@@ -116,13 +118,14 @@ export function parseSession(lines: RolloutLine[]): {
   let turn: MutableTurn | null = null;
   let step: ModelStep | null = null;
   let toolCallsById = new Map<string, ToolCall>();
+  let lastServiceTier: string | undefined;
   let lastTimestamp = Date.now();
 
   function newStep(startTime: number): ModelStep {
     return { startTime, endTime: startTime, toolCalls: [] };
   }
 
-  const ensureTurn = (ts: number): MutableTurn => (turn ??= newTurn(ts));
+  const ensureTurn = (ts: number): MutableTurn => (turn ??= newTurn(ts, lastServiceTier));
   const ensureStep = (ts: number) => (step ??= newStep(ts));
 
   const closeStep = (ts: number, usage?: TokenUsage) => {
@@ -175,8 +178,12 @@ export function parseSession(lines: RolloutLine[]): {
 
     if (line.type === "turn_context") {
       const t = ensureTurn(ts);
-      const p = line.payload as { model?: string };
+      const p = line.payload as TurnContextPayload;
       t.model = p.model ?? t.model;
+      if (typeof p.service_tier === "string") {
+        lastServiceTier = p.service_tier;
+        t.serviceTier = p.service_tier;
+      }
       t.invocationParams = line.payload as Record<string, unknown>;
       continue;
     }
@@ -284,9 +291,18 @@ export function parseSession(lines: RolloutLine[]): {
       const p = line.payload as EventMsgPayload;
       const et = p.type;
 
+      if (et === "thread_settings_applied") {
+        const serviceTier = p.thread_settings?.service_tier;
+        if (typeof serviceTier === "string") {
+          lastServiceTier = serviceTier;
+          if (turn) turn.serviceTier = serviceTier;
+        }
+        continue;
+      }
+
       if (et === "task_started") {
         if (turn) finishTurn(ts, { completed: false, aborted: false });
-        turn = newTurn(ts);
+        turn = newTurn(ts, lastServiceTier);
         turn.turnId = typeof p.turn_id === "string" ? p.turn_id : undefined;
         continue;
       }

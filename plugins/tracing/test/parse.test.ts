@@ -81,6 +81,36 @@ describe("parseSession", () => {
     expect(turn.endTime).toBe(Date.parse("2026-06-03T11:00:05.000Z"));
   });
 
+  it("applies service-tier changes to the next turn without creating an empty turn", () => {
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-06-03T12:00:00.500Z",
+        type: "event_msg",
+        payload: {
+          type: "thread_settings_applied",
+          thread_settings: { service_tier: "priority" },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t" },
+      },
+    ];
+
+    const { turns } = parseSession(lines);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].turnId).toBe("t");
+    expect(turns[0].serviceTier).toBe("priority");
+  });
+
   it("treats a trailing, never-completed turn as not completed", () => {
     const lines: RolloutLine[] = [
       { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },

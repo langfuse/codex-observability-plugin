@@ -9,7 +9,7 @@ Once enabled, every Codex turn shows up in Langfuse as a trace you can inspect, 
 After each Codex turn, the plugin reads the session's rollout transcript and uploads it to Langfuse as a [trace](https://langfuse.com/docs/observability/data-model). The structure mirrors how Codex actually works:
 
 - **Turn** (`Codex Turn`, an [agent observation](https://langfuse.com/docs/observability/features/observation-types)) — one trace per turn, from your prompt to the final answer.
-- **Generations** — one per model response within the turn, named `LLM` (or `LLM Subagent` inside subagent threads), with the model recorded on the observation plus reasoning, assistant text, the tool calls it requested, and token usage.
+- **Generations** — one per model response within the turn, named `LLM` (or `LLM Subagent` inside subagent threads), with the model recorded on the observation plus reasoning, assistant text, the tool calls it requested, token usage, and the active Codex service tier.
 - **Tool calls** — shell commands, `apply_patch`, `spawn_agent`, MCP tools, web searches, etc., each with its input, output, and error status. MCP calls are named `server.tool`, and failed commands are flagged as errors.
 - **Subagents** — subagent threads are resolved from their own rollout files and nested under the spawning turn as `Codex Subagent Turn`.
 - **Sessions** — all turns from one Codex session are grouped via the Codex thread id, so you can replay the whole session in Langfuse's [Sessions](https://langfuse.com/docs/observability/features/sessions) view.
@@ -94,6 +94,7 @@ Run a Codex turn, then open your Langfuse project to see the trace.
 | `LANGFUSE_CODEX_TAGS`                                         | No       | —                            | Tags for all traces (JSON array or comma-separated)                  |
 | `LANGFUSE_CODEX_METADATA`                                     | No       | —                            | JSON object of metadata to attach to all traces                      |
 | `LANGFUSE_CODEX_TRACE_SEED`                                   | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids)) |
+| `LANGFUSE_CODEX_SERVICE_TIER`                                 | No       | Codex configuration          | Override the service-tier fallback when the rollout omits it         |
 | `LANGFUSE_CODEX_MAX_CHARS`                                    | No       | `20000`                      | Truncate inputs/outputs longer than this many characters             |
 | `LANGFUSE_CODEX_DEBUG`                                        | No       | `false`                      | Set to `"true"` for verbose logging to stderr                        |
 | `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | No       | `false`                      | Set to `"true"` to make hook upload errors fail the hook             |
@@ -106,6 +107,20 @@ Run a Codex turn, then open your Langfuse project to see the trace.
 | 🇺🇸 US    | `https://us.cloud.langfuse.com`    |
 | 🇯🇵 Japan | `https://jp.cloud.langfuse.com`    |
 | ⚕️ HIPAA | `https://hipaa.cloud.langfuse.com` |
+
+## Service-tier pricing
+
+Codex service tiers can change model pricing. The plugin reads the active tier from each turn's rollout and records it as `codex.service_tier` generation metadata. For an initial turn whose rollout does not yet contain the tier, it falls back to `service_tier` in Codex's global or project `config.toml`. `LANGFUSE_CODEX_SERVICE_TIER` or `service_tier` in `langfuse.json` can override that fallback.
+
+Non-default tiers also add a numeric usage-detail selector. For example, a `priority` tier emits:
+
+```json
+{
+  "codex_service_tier_priority": 1
+}
+```
+
+This lets a Langfuse custom model select a conditional pricing tier with a rule such as `^codex_service_tier_(fast|priority)$ > 0`. Other Codex tiers use the same `codex_service_tier_<normalized-tier>` convention. The selector has no price itself; the matching Langfuse tier supplies the applicable input, cache-read, and output prices. The plugin does not hard-code provider rates or organization-specific discounts.
 
 ## Deterministic trace ids
 
@@ -159,6 +174,7 @@ The same works from JavaScript with the Langfuse SDK: `await createTraceId(`${se
 | `tags`          | `LANGFUSE_CODEX_TAGS`                                         | —                            | Tags for all traces               |
 | `metadata`      | `LANGFUSE_CODEX_METADATA`                                     | —                            | Metadata object for all traces    |
 | `trace_seed`    | `LANGFUSE_CODEX_TRACE_SEED`                                   | —                            | Deterministic trace-id seed       |
+| `service_tier`  | `LANGFUSE_CODEX_SERVICE_TIER`                                 | Codex configuration          | Service-tier fallback override    |
 | `max_chars`     | `LANGFUSE_CODEX_MAX_CHARS`                                    | `20000`                      | Input/output truncation threshold |
 | `debug`         | `LANGFUSE_CODEX_DEBUG`                                        | `false`                      | Verbose logging                   |
 | `fail_on_error` | `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | `false`                      | Fail the hook on upload errors    |

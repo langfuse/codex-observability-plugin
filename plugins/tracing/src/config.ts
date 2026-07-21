@@ -33,6 +33,8 @@ export const ConfigSchema = z.object({
   metadata: z.record(z.string(), z.string()).optional(),
   // LANGFUSE_CODEX_TRACE_SEED — deterministic trace ids derived from this seed
   trace_seed: z.string().optional(),
+  // LANGFUSE_CODEX_SERVICE_TIER — fallback when the rollout omits the tier
+  service_tier: z.string().optional(),
   // LANGFUSE_CODEX_MAX_CHARS — truncate large inputs/outputs
   max_chars: z.number().int().positive(),
   // LANGFUSE_CODEX_DEBUG
@@ -171,6 +173,20 @@ async function readCodexUserEmail(authFile: string): Promise<string | undefined>
   }
 }
 
+async function readCodexServiceTier(configFile: string): Promise<string | undefined> {
+  try {
+    const config = await fs.readFile(configFile, "utf-8");
+    for (const line of config.split("\n")) {
+      if (/^\s*\[/.test(line)) break;
+      const match = /^\s*service_tier\s*=\s*["']([^"']+)["']/.exec(line);
+      if (match) return match[1];
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 function getVar(suffix: string, env: Record<string, string | undefined>): string | undefined {
   return env[`LANGFUSE_CODEX_${suffix}`] ?? env[`LANGFUSE_${suffix}`];
 }
@@ -187,6 +203,7 @@ function readEnvConfig(env: Record<string, string | undefined>): Partial<Config>
       tags: parseTags(env.LANGFUSE_CODEX_TAGS),
       metadata: parseMetadata(env.LANGFUSE_CODEX_METADATA),
       trace_seed: env.LANGFUSE_CODEX_TRACE_SEED,
+      service_tier: env.LANGFUSE_CODEX_SERVICE_TIER,
       max_chars: parseInteger(env.LANGFUSE_CODEX_MAX_CHARS),
       debug: parseBoolean(env.LANGFUSE_CODEX_DEBUG),
       fail_on_error: parseBoolean(env.LANGFUSE_CODEX_FAIL_ON_ERROR),
@@ -196,9 +213,12 @@ function readEnvConfig(env: Record<string, string | undefined>): Partial<Config>
 
 const getHomeDir = () => process.env.HOME ?? os.homedir();
 
+function getCodexHome(home: string, env: Record<string, string | undefined>): string {
+  return env.CODEX_HOME?.trim() || path.join(home, ".codex");
+}
+
 function getCodexAuthFile(home: string, env: Record<string, string | undefined>): string {
-  const codexHome = env.CODEX_HOME?.trim();
-  return codexHome ? path.join(codexHome, "auth.json") : path.join(home, ".codex", "auth.json");
+  return path.join(getCodexHome(home, env), "auth.json");
 }
 
 export async function getConfig(options?: {
@@ -210,10 +230,13 @@ export async function getConfig(options?: {
   const cwd = options?.cwd ?? process.cwd();
   const env = options?.env ?? process.env;
 
-  const [globalConfig, localConfig] = await Promise.all([
-    readConfigFile(path.join(home, ".codex", "langfuse.json")),
-    readConfigFile(path.join(cwd, ".codex", "langfuse.json")),
-  ]);
+  const [globalConfig, localConfig, globalCodexServiceTier, localCodexServiceTier] =
+    await Promise.all([
+      readConfigFile(path.join(home, ".codex", "langfuse.json")),
+      readConfigFile(path.join(cwd, ".codex", "langfuse.json")),
+      readCodexServiceTier(path.join(getCodexHome(home, env), "config.toml")),
+      readCodexServiceTier(path.join(cwd, ".codex", "config.toml")),
+    ]);
   const envConfig = readEnvConfig(env);
   const explicitUserId = globalConfig?.user_id ?? localConfig?.user_id ?? envConfig.user_id;
   const codexUserId = explicitUserId
@@ -223,6 +246,8 @@ export async function getConfig(options?: {
   return ConfigSchema.parse({
     ...DEFAULTS,
     ...(codexUserId ? { user_id: codexUserId } : {}),
+    ...(globalCodexServiceTier ? { service_tier: globalCodexServiceTier } : {}),
+    ...(localCodexServiceTier ? { service_tier: localCodexServiceTier } : {}),
     ...globalConfig,
     ...localConfig,
     ...envConfig,
