@@ -110,6 +110,7 @@ export type TurnContextPayload = {
   [key: string]: unknown;
 };
 
+/** Codex reports top-level input/output counts inclusive of their details. */
 export type TokenUsage = {
   input_tokens?: number;
   output_tokens?: number;

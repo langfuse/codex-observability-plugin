@@ -6,6 +6,7 @@ import {
   createTraceId,
   propagateAttributes,
   startObservation,
+  type LangfuseGenerationAttributes,
   type LangfuseObservation,
 } from "@langfuse/tracing";
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
@@ -109,19 +110,49 @@ async function seededTraceParent(
   }
 }
 
-function toUsageDetails(usage: TokenUsage | undefined): Record<string, number> | undefined {
+function isTokenCount(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Send Codex's inclusive counts using Langfuse's strict OpenAI usage schema. */
+function toUsageDetails(
+  usage: TokenUsage | undefined,
+): LangfuseGenerationAttributes["usageDetails"] {
   if (!usage) return undefined;
-  const details: Record<string, number> = {};
-  if (typeof usage.input_tokens === "number") details.input = usage.input_tokens;
-  if (typeof usage.output_tokens === "number") details.output = usage.output_tokens;
-  if (typeof usage.total_tokens === "number") details.total = usage.total_tokens;
-  if (typeof usage.cached_input_tokens === "number") {
-    details.cache_read_input_tokens = usage.cached_input_tokens;
+  const {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: total,
+    cached_input_tokens: cached,
+    reasoning_output_tokens: reasoning,
+  } = usage;
+
+  if (
+    !isTokenCount(input) ||
+    !isTokenCount(output) ||
+    !isTokenCount(total) ||
+    total !== input + output
+  ) {
+    return undefined;
   }
-  if (typeof usage.reasoning_output_tokens === "number") {
-    details.reasoning_tokens = usage.reasoning_output_tokens;
+  if (
+    (cached !== undefined && (!isTokenCount(cached) || cached > input)) ||
+    (reasoning !== undefined && (!isTokenCount(reasoning) || reasoning > output))
+  ) {
+    return undefined;
   }
-  return Object.keys(details).length > 0 ? details : undefined;
+
+  // The runtime supports this documented shape, but the SDK type still
+  // exposes only its legacy camelCase usage interface.
+  return {
+    prompt_tokens: input,
+    completion_tokens: output,
+    total_tokens: total,
+    ...(cached !== undefined ? { prompt_tokens_details: { cached_tokens: cached } } : {}),
+    ...(reasoning !== undefined
+      ? { completion_tokens_details: { reasoning_tokens: reasoning } }
+      : {}),
+  } as unknown as LangfuseGenerationAttributes["usageDetails"];
 }
 
 type Clip = {
