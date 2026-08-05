@@ -85,7 +85,9 @@ describe("convertRollout", () => {
 
     // Two generations, both children of the root, named "LLM" (the model name
     // lives in the model attribute, not the observation name).
-    const generations = spans.filter((s) => obsType(s) === "generation");
+    const generations = spans
+      .filter((s) => obsType(s) === "generation")
+      .sort((a, b) => startMs(a) - startMs(b));
     expect(generations).toHaveLength(2);
     for (const gen of generations) {
       expect(gen.name).toBe("LLM");
@@ -94,9 +96,11 @@ describe("convertRollout", () => {
     }
     // Usage is sent in Langfuse's OpenAI-compatible shape. Langfuse then
     // normalizes the inclusive parent counts and nested detail counts.
-    const usages = generations.map((g) =>
-      JSON.parse(attr(g, "langfuse.observation.usage_details")),
-    );
+    const usages = generations.map((generation) => {
+      const usage = attr(generation, "langfuse.observation.usage_details");
+      expect(usage, "expected generation usage details").not.toBe("");
+      return JSON.parse(usage);
+    });
     expect(usages).toEqual([
       {
         prompt_tokens: 100,
