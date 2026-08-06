@@ -133,12 +133,14 @@ function toUsageDetails(
     !isTokenCount(total) ||
     total !== input + output
   ) {
+    debugLog("dropping usage: missing or inconsistent token counts", usage);
     return undefined;
   }
   if (
     (cached !== undefined && (!isTokenCount(cached) || cached > input)) ||
     (reasoning !== undefined && (!isTokenCount(reasoning) || reasoning > output))
   ) {
+    debugLog("dropping usage: implausible cached/reasoning details", usage);
     return undefined;
   }
 

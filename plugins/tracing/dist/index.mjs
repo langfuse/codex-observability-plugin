@@ -46988,8 +46988,14 @@ function isTokenCount(value) {
 function toUsageDetails(usage) {
 	if (!usage) return void 0;
 	const { input_tokens: input, output_tokens: output, total_tokens: total, cached_input_tokens: cached$1, reasoning_output_tokens: reasoning } = usage;
-	if (!isTokenCount(input) || !isTokenCount(output) || !isTokenCount(total) || total !== input + output) return;
-	if (cached$1 !== void 0 && (!isTokenCount(cached$1) || cached$1 > input) || reasoning !== void 0 && (!isTokenCount(reasoning) || reasoning > output)) return;
+	if (!isTokenCount(input) || !isTokenCount(output) || !isTokenCount(total) || total !== input + output) {
+		debugLog("dropping usage: missing or inconsistent token counts", usage);
+		return;
+	}
+	if (cached$1 !== void 0 && (!isTokenCount(cached$1) || cached$1 > input) || reasoning !== void 0 && (!isTokenCount(reasoning) || reasoning > output)) {
+		debugLog("dropping usage: implausible cached/reasoning details", usage);
+		return;
+	}
 	return {
 		prompt_tokens: input,
 		completion_tokens: output,
