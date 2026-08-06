@@ -85,19 +85,38 @@ describe("convertRollout", () => {
 
     // Two generations, both children of the root, named "LLM" (the model name
     // lives in the model attribute, not the observation name).
-    const generations = spans.filter((s) => obsType(s) === "generation");
+    const generations = spans
+      .filter((s) => obsType(s) === "generation")
+      .sort((a, b) => startMs(a) - startMs(b));
     expect(generations).toHaveLength(2);
     for (const gen of generations) {
       expect(gen.name).toBe("LLM");
       expect(parentId(gen)).toBe(root!.spanContext().spanId);
       expect(attr(gen, "langfuse.observation.model.name")).toBe("gpt-5.4");
     }
-    // First generation carries token usage.
-    const usage = generations
-      .map((g) => attr(g, "langfuse.observation.usage_details"))
-      .find((u) => u.includes("120"));
-    expect(usage, "expected usage details with 120 total tokens").toBeTruthy();
-
+    // Usage is sent in Langfuse's OpenAI-compatible shape. Langfuse then
+    // normalizes the inclusive parent counts and nested detail counts.
+    const usages = generations.map((generation) => {
+      const usage = attr(generation, "langfuse.observation.usage_details");
+      expect(usage, "expected generation usage details").not.toBe("");
+      return JSON.parse(usage);
+    });
+    expect(usages).toEqual([
+      {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        total_tokens: 120,
+        prompt_tokens_details: { cached_tokens: 0 },
+        completion_tokens_details: { reasoning_tokens: 5 },
+      },
+      {
+        prompt_tokens: 150,
+        completion_tokens: 30,
+        total_tokens: 180,
+        prompt_tokens_details: { cached_tokens: 50 },
+        completion_tokens_details: { reasoning_tokens: 0 },
+      },
+    ]);
     // One tool span, nested under a generation, with the captured command output.
     const tools = spans.filter((s) => obsType(s) === "tool");
     expect(tools).toHaveLength(1);
