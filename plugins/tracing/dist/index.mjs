@@ -46661,6 +46661,10 @@ function newTurn(startTime) {
 		aborted: false
 	};
 }
+/** Record a spawned subagent once across Codex rollout schema versions. */
+function addSubagentThreadId(turn, threadId) {
+	if (typeof threadId === "string" && !turn.subagentThreadIds.includes(threadId)) turn.subagentThreadIds.push(threadId);
+}
 /**
 * Parse a Codex rollout into session metadata and a list of fully assembled
 * turns.
@@ -46835,7 +46839,8 @@ function parseSession(lines) {
 				aborted: true
 			});
 			else {
-				if (et === "collab_agent_spawn_end" && typeof p.new_thread_id === "string") turn.subagentThreadIds.push(p.new_thread_id);
+				if (et === "collab_agent_spawn_end") addSubagentThreadId(turn, p.new_thread_id);
+				else if (et === "sub_agent_activity" && p.kind === "started") addSubagentThreadId(turn, p.agent_thread_id);
 				if ((et === "mcp_tool_call_begin" || et === "mcp_tool_call_end") && typeof p.call_id === "string") {
 					const tc = toolCallsById.get(p.call_id);
 					const inv = p.invocation;

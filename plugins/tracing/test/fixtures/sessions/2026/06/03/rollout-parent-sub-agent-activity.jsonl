@@ -1,0 +1,13 @@
+{"timestamp":"2026-06-03T13:00:00.000Z","type":"session_meta","payload":{"id":"sess-parent-current","cli_version":"0.147.0","model_provider":"openai"}}
+{"timestamp":"2026-06-03T13:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-parent-current"}}
+{"timestamp":"2026-06-03T13:00:01.200Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
+{"timestamp":"2026-06-03T13:00:01.300Z","type":"event_msg","payload":{"type":"user_message","message":"Spawn a subagent to run a command"}}
+{"timestamp":"2026-06-03T13:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"call-spawn-current","arguments":"{\"message\":\"run a command\"}"}}
+{"timestamp":"2026-06-03T13:00:02.500Z","type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"call-spawn-current","agent_thread_id":"thread-child-current","agent_path":"/root/current-child","kind":"started"}}
+{"timestamp":"2026-06-03T13:00:02.600Z","type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"call-spawn-current","agent_thread_id":"thread-child-current","agent_path":"/root/current-child","kind":"started"}}
+{"timestamp":"2026-06-03T13:00:02.700Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-spawn-current","output":"started"}}
+{"timestamp":"2026-06-03T13:00:02.800Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80,"output_tokens":10,"total_tokens":90,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":80,"output_tokens":10,"total_tokens":90,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}
+{"timestamp":"2026-06-03T13:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Subagent completed."}]}}
+{"timestamp":"2026-06-03T13:00:05.100Z","type":"event_msg","payload":{"type":"agent_message","message":"Subagent completed."}}
+{"timestamp":"2026-06-03T13:00:05.200Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":90,"output_tokens":12,"total_tokens":102,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":170,"output_tokens":22,"total_tokens":192,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}
+{"timestamp":"2026-06-03T13:00:05.300Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-parent-current"}}

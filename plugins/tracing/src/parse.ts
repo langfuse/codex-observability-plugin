@@ -96,6 +96,13 @@ function newTurn(startTime: number): MutableTurn {
   };
 }
 
+/** Record a spawned subagent once across Codex rollout schema versions. */
+function addSubagentThreadId(turn: MutableTurn, threadId: unknown): void {
+  if (typeof threadId === "string" && !turn.subagentThreadIds.includes(threadId)) {
+    turn.subagentThreadIds.push(threadId);
+  }
+}
+
 /**
  * Parse a Codex rollout into session metadata and a list of fully assembled
  * turns.
@@ -305,10 +312,12 @@ export function parseSession(lines: RolloutLine[]): {
       } else if (et === "turn_aborted") {
         finishTurn(ts, { completed: true, aborted: true });
       } else {
-        // A subagent spawn records the child thread *and* (since it carries a
-        // call_id ending in "_end") enriches the spawning tool call below.
-        if (et === "collab_agent_spawn_end" && typeof p.new_thread_id === "string") {
-          turn!.subagentThreadIds.push(p.new_thread_id);
+        // Codex has used two lifecycle schemas for successful subagent spawns.
+        // Accept both and deduplicate in case a rollout contains both forms.
+        if (et === "collab_agent_spawn_end") {
+          addSubagentThreadId(turn!, p.new_thread_id);
+        } else if (et === "sub_agent_activity" && p.kind === "started") {
+          addSubagentThreadId(turn!, p.agent_thread_id);
         }
         // MCP tool calls are function calls with a mangled name
         // (`server__tool`); the begin/end events carry the clean server/tool

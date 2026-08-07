@@ -81,6 +81,13 @@ describe("parseSession", () => {
     expect(turn.endTime).toBe(Date.parse("2026-06-03T11:00:05.000Z"));
   });
 
+  it("captures and deduplicates current sub_agent_activity thread ids", () => {
+    const { turns } = parseSession(loadFixture("rollout-parent-sub-agent-activity.jsonl"));
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].subagentThreadIds).toEqual(["thread-child-current"]);
+  });
+
   it("treats a trailing, never-completed turn as not completed", () => {
     const lines: RolloutLine[] = [
       { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },

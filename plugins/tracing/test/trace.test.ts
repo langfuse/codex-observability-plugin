@@ -159,6 +159,42 @@ describe("convertRollout", () => {
     expect(attr(failedTool!, "langfuse.observation.status_message")).toContain("command failed");
   });
 
+  it("nests current sub_agent_activity rollouts with their execution actions", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-parent-sub-agent-activity.jsonl"), {
+      config: baseConfig,
+    });
+
+    const spans = exporter.getFinishedSpans();
+    const parent = spans.find((s) => s.name === "Codex Turn" && obsType(s) === "agent");
+    const childAgents = spans.filter(
+      (s) => s.name === "Codex Subagent Turn" && obsType(s) === "agent",
+    );
+
+    expect(parent).toBeDefined();
+    expect(childAgents).toHaveLength(1);
+    const child = childAgents[0];
+    expect(parentId(child)).toBe(parent!.spanContext().spanId);
+    expect(child.spanContext().traceId).toBe(parent!.spanContext().traceId);
+
+    const childGeneration = spans.find(
+      (s) =>
+        s.name === "LLM Subagent" &&
+        obsType(s) === "generation" &&
+        parentId(s) === child.spanContext().spanId,
+    );
+    expect(childGeneration).toBeDefined();
+
+    const childTool = spans.find(
+      (s) =>
+        s.name === "exec_command" &&
+        obsType(s) === "tool" &&
+        parentId(s) === childGeneration!.spanContext().spanId,
+    );
+    expect(childTool).toBeDefined();
+    expect(attr(childTool!, "langfuse.observation.output")).toContain("child action");
+  });
+
   it("captures web search, local shell, and MCP tool calls with specific names", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-tools-main.jsonl"), { config: baseConfig });
