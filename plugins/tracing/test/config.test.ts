@@ -213,6 +213,28 @@ describe("getConfig", () => {
     expect(fromEnv.trace_seed).toBe("seed-from-env");
   });
 
+  it("uses Codex service-tier config as an overridable rollout fallback", async () => {
+    const home = emptyHome();
+    const cwd = emptyHome();
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, ".codex"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".codex", "config.toml"),
+      'service_tier = "fast"\n[features]\nfast_mode = true\n',
+    );
+    fs.writeFileSync(path.join(cwd, ".codex", "config.toml"), 'service_tier = "flex"\n');
+
+    const fromCodexConfig = await getConfig({ home, cwd, env: {} });
+    expect(fromCodexConfig.service_tier).toBe("flex");
+
+    const fromEnv = await getConfig({
+      home,
+      cwd,
+      env: { LANGFUSE_CODEX_SERVICE_TIER: "priority" },
+    });
+    expect(fromEnv.service_tier).toBe("priority");
+  });
+
   it("parses fail-on-error from config and environment", async () => {
     const home = makeTmpHome({
       rel: ".codex/langfuse.json",
