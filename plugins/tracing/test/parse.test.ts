@@ -69,8 +69,6 @@ describe("parseSession", () => {
     expect(turn.completed).toBe(true);
     expect(turn.aborted).toBe(true);
     expect(turn.userInput).toBe("Spawn a subagent to tell a joke");
-
-    // The spawn is recorded as a subagent thread...
     expect(turn.subagentThreadIds).toEqual(["thread-child"]);
 
     // ...and the failing exec is captured with its error.
@@ -79,6 +77,57 @@ describe("parseSession", () => {
     expect(failing?.error).toBe("command failed");
     expect(turn.startTime).toBe(Date.parse("2026-06-03T11:00:01.000Z"));
     expect(turn.endTime).toBe(Date.parse("2026-06-03T11:00:05.000Z"));
+  });
+
+  it("records subagent threads from sub_agent_activity, ignoring non-started kinds", () => {
+    const event = (ts: string, payload: Record<string, unknown>): RolloutLine => ({
+      timestamp: ts,
+      type: "event_msg",
+      payload: { ...payload },
+    });
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-06-03T13:00:00.000Z", type: "session_meta", payload: { id: "s" } },
+      event("2026-06-03T13:00:01.000Z", { type: "task_started", turn_id: "t" }),
+      event("2026-06-03T13:00:02.000Z", {
+        type: "sub_agent_activity",
+        event_id: "c1",
+        agent_thread_id: "thread-a",
+        agent_path: "/root/worker",
+        kind: "started",
+      }),
+      // The same spawn reported again — legacy format and a repeated activity.
+      event("2026-06-03T13:00:02.100Z", {
+        type: "collab_agent_spawn_end",
+        call_id: "c1",
+        new_thread_id: "thread-a",
+      }),
+      event("2026-06-03T13:00:02.200Z", {
+        type: "sub_agent_activity",
+        event_id: "c1",
+        agent_thread_id: "thread-a",
+        agent_path: "/root/worker",
+        kind: "started",
+      }),
+      // Later lifecycle kinds reference an existing child and must not register.
+      event("2026-06-03T13:00:03.000Z", {
+        type: "sub_agent_activity",
+        event_id: "c2",
+        agent_thread_id: "thread-b",
+        agent_path: "/root/other",
+        kind: "interacted",
+      }),
+      event("2026-06-03T13:00:03.100Z", {
+        type: "sub_agent_activity",
+        event_id: "c3",
+        agent_thread_id: "thread-c",
+        agent_path: "/root/other",
+        kind: "interrupted",
+      }),
+      event("2026-06-03T13:00:04.000Z", { type: "task_complete", turn_id: "t" }),
+    ];
+    const { turns } = parseSession(lines);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].subagentThreadIds).toEqual(["thread-a"]);
   });
 
   it("treats a trailing, never-completed turn as not completed", () => {

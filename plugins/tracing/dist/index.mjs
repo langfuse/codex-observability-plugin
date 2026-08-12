@@ -46687,6 +46687,9 @@ function parseSession(lines) {
 	}
 	const ensureTurn = (ts) => turn ??= newTurn(ts);
 	const ensureStep = (ts) => step ??= newStep(ts);
+	const recordSubagentThread = (threadId) => {
+		if (!turn.subagentThreadIds.includes(threadId)) turn.subagentThreadIds.push(threadId);
+	};
 	const closeStep = (ts, usage) => {
 		if (!step) return;
 		step.endTime = Math.max(step.endTime, ts);
@@ -46835,7 +46838,8 @@ function parseSession(lines) {
 				aborted: true
 			});
 			else {
-				if (et === "collab_agent_spawn_end" && typeof p.new_thread_id === "string") turn.subagentThreadIds.push(p.new_thread_id);
+				if (et === "collab_agent_spawn_end" && typeof p.new_thread_id === "string") recordSubagentThread(p.new_thread_id);
+				if (et === "sub_agent_activity" && p.kind === "started" && typeof p.agent_thread_id === "string") recordSubagentThread(p.agent_thread_id);
 				if ((et === "mcp_tool_call_begin" || et === "mcp_tool_call_end") && typeof p.call_id === "string") {
 					const tc = toolCallsById.get(p.call_id);
 					const inv = p.invocation;
