@@ -1,0 +1,11 @@
+{"timestamp":"2026-06-03T12:00:00.000Z","type":"session_meta","payload":{"id":"sess-activity","cli_version":"0.145.0","model_provider":"openai"}}
+{"timestamp":"2026-06-03T12:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-activity"}}
+{"timestamp":"2026-06-03T12:00:01.200Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
+{"timestamp":"2026-06-03T12:00:01.300Z","type":"event_msg","payload":{"type":"user_message","message":"Spawn a worker to compute the answer"}}
+{"timestamp":"2026-06-03T12:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"call-spawn-act","arguments":"{\"message\":\"compute the answer\"}"}}
+{"timestamp":"2026-06-03T12:00:02.500Z","type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"call-spawn-act","occurred_at_ms":1780488002500,"agent_thread_id":"thread-act","agent_path":"/root/worker","kind":"started"}}
+{"timestamp":"2026-06-03T12:00:02.600Z","type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"call-wait-act","occurred_at_ms":1780488002600,"agent_thread_id":"thread-act","agent_path":"/root/worker","kind":"interacted"}}
+{"timestamp":"2026-06-03T12:00:02.800Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-spawn-act","output":"{\"agent_id\":\"thread-act\",\"nickname\":\"Worker\"}"}}
+{"timestamp":"2026-06-03T12:00:04.500Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The worker replied: 42"}]}}
+{"timestamp":"2026-06-03T12:00:04.600Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}
+{"timestamp":"2026-06-03T12:00:05.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-activity"}}
