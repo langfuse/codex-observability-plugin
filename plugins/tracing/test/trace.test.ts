@@ -85,19 +85,38 @@ describe("convertRollout", () => {
 
     // Two generations, both children of the root, named "LLM" (the model name
     // lives in the model attribute, not the observation name).
-    const generations = spans.filter((s) => obsType(s) === "generation");
+    const generations = spans
+      .filter((s) => obsType(s) === "generation")
+      .sort((a, b) => startMs(a) - startMs(b));
     expect(generations).toHaveLength(2);
     for (const gen of generations) {
       expect(gen.name).toBe("LLM");
       expect(parentId(gen)).toBe(root!.spanContext().spanId);
       expect(attr(gen, "langfuse.observation.model.name")).toBe("gpt-5.4");
     }
-    // First generation carries token usage.
-    const usage = generations
-      .map((g) => attr(g, "langfuse.observation.usage_details"))
-      .find((u) => u.includes("120"));
-    expect(usage, "expected usage details with 120 total tokens").toBeTruthy();
-
+    // Usage is sent in Langfuse's OpenAI-compatible shape. Langfuse then
+    // normalizes the inclusive parent counts and nested detail counts.
+    const usages = generations.map((generation) => {
+      const usage = attr(generation, "langfuse.observation.usage_details");
+      expect(usage, "expected generation usage details").not.toBe("");
+      return JSON.parse(usage);
+    });
+    expect(usages).toEqual([
+      {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        total_tokens: 120,
+        prompt_tokens_details: { cached_tokens: 0 },
+        completion_tokens_details: { reasoning_tokens: 5 },
+      },
+      {
+        prompt_tokens: 150,
+        completion_tokens: 30,
+        total_tokens: 180,
+        prompt_tokens_details: { cached_tokens: 50 },
+        completion_tokens_details: { reasoning_tokens: 0 },
+      },
+    ]);
     // One tool span, nested under a generation, with the captured command output.
     const tools = spans.filter((s) => obsType(s) === "tool");
     expect(tools).toHaveLength(1);
@@ -138,6 +157,30 @@ describe("convertRollout", () => {
     );
     expect(failedTool, "expected a failed tool span").toBeDefined();
     expect(attr(failedTool!, "langfuse.observation.status_message")).toContain("command failed");
+  });
+
+  it("nests subagent turns discovered via sub_agent_activity events", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-activity-main.jsonl"), { config: baseConfig });
+
+    const spans = exporter.getFinishedSpans();
+    const parent = spans.find((s) => s.name === "Codex Turn" && obsType(s) === "agent");
+    const childTurns = spans.filter(
+      (s) => s.name === "Codex Subagent Turn" && obsType(s) === "agent",
+    );
+    expect(parent).toBeDefined();
+    // Exactly one child (the kind filter itself is pinned at parse level,
+    // where non-"started" activities target distinct thread ids).
+    expect(childTurns).toHaveLength(1);
+    const child = childTurns[0];
+    expect(child.spanContext().traceId).toBe(parent!.spanContext().traceId);
+    expect(attr(child, "langfuse.observation.input")).toContain("compute the answer");
+
+    const childGeneration = spans.find(
+      (s) => obsType(s) === "generation" && parentId(s) === child.spanContext().spanId,
+    );
+    expect(childGeneration?.name).toBe("LLM Subagent");
+    expect(attr(childGeneration!, "langfuse.observation.model.name")).toBe("gpt-5.4");
   });
 
   it("captures web search, local shell, and MCP tool calls with specific names", async () => {

@@ -125,6 +125,14 @@ export function parseSession(lines: RolloutLine[]): {
   const ensureTurn = (ts: number): MutableTurn => (turn ??= newTurn(ts));
   const ensureStep = (ts: number) => (step ??= newStep(ts));
 
+  // Rollouts from the transition period can carry both spawn-event formats
+  // for the same child; the thread must be nested exactly once.
+  const recordSubagentThread = (threadId: string) => {
+    if (!turn!.subagentThreadIds.includes(threadId)) {
+      turn!.subagentThreadIds.push(threadId);
+    }
+  };
+
   const closeStep = (ts: number, usage?: TokenUsage) => {
     if (!step) return;
     step.endTime = Math.max(step.endTime, ts);
@@ -308,7 +316,18 @@ export function parseSession(lines: RolloutLine[]): {
         // A subagent spawn records the child thread *and* (since it carries a
         // call_id ending in "_end") enriches the spawning tool call below.
         if (et === "collab_agent_spawn_end" && typeof p.new_thread_id === "string") {
-          turn!.subagentThreadIds.push(p.new_thread_id);
+          recordSubagentThread(p.new_thread_id);
+        }
+        // Codex multi-agent v2 persists the spawn as sub_agent_activity
+        // instead. Only kind "started" marks a spawn — "interacted" and
+        // "interrupted" reference an existing child and would nest it under
+        // the wrong (later) turn.
+        if (
+          et === "sub_agent_activity" &&
+          p.kind === "started" &&
+          typeof p.agent_thread_id === "string"
+        ) {
+          recordSubagentThread(p.agent_thread_id);
         }
         // MCP tool calls are function calls with a mangled name
         // (`server__tool`); the begin/end events carry the clean server/tool

@@ -46687,6 +46687,9 @@ function parseSession(lines) {
 	}
 	const ensureTurn = (ts) => turn ??= newTurn(ts);
 	const ensureStep = (ts) => step ??= newStep(ts);
+	const recordSubagentThread = (threadId) => {
+		if (!turn.subagentThreadIds.includes(threadId)) turn.subagentThreadIds.push(threadId);
+	};
 	const closeStep = (ts, usage) => {
 		if (!step) return;
 		step.endTime = Math.max(step.endTime, ts);
@@ -46835,7 +46838,8 @@ function parseSession(lines) {
 				aborted: true
 			});
 			else {
-				if (et === "collab_agent_spawn_end" && typeof p.new_thread_id === "string") turn.subagentThreadIds.push(p.new_thread_id);
+				if (et === "collab_agent_spawn_end" && typeof p.new_thread_id === "string") recordSubagentThread(p.new_thread_id);
+				if (et === "sub_agent_activity" && p.kind === "started" && typeof p.agent_thread_id === "string") recordSubagentThread(p.agent_thread_id);
 				if ((et === "mcp_tool_call_begin" || et === "mcp_tool_call_end") && typeof p.call_id === "string") {
 					const tc = toolCallsById.get(p.call_id);
 					const inv = p.invocation;
@@ -46981,15 +46985,28 @@ async function seededTraceParent(config$1, sessionMeta, turnNumber) {
 		return;
 	}
 }
+function isTokenCount(value) {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+/** Send Codex's inclusive counts using Langfuse's strict OpenAI usage schema. */
 function toUsageDetails(usage) {
 	if (!usage) return void 0;
-	const details = {};
-	if (typeof usage.input_tokens === "number") details.input = usage.input_tokens;
-	if (typeof usage.output_tokens === "number") details.output = usage.output_tokens;
-	if (typeof usage.total_tokens === "number") details.total = usage.total_tokens;
-	if (typeof usage.cached_input_tokens === "number") details.cache_read_input_tokens = usage.cached_input_tokens;
-	if (typeof usage.reasoning_output_tokens === "number") details.reasoning_tokens = usage.reasoning_output_tokens;
-	return Object.keys(details).length > 0 ? details : void 0;
+	const { input_tokens: input, output_tokens: output, total_tokens: total, cached_input_tokens: cached$1, reasoning_output_tokens: reasoning } = usage;
+	if (!isTokenCount(input) || !isTokenCount(output) || !isTokenCount(total) || total !== input + output) {
+		debugLog("dropping usage: missing or inconsistent token counts", usage);
+		return;
+	}
+	if (cached$1 !== void 0 && (!isTokenCount(cached$1) || cached$1 > input) || reasoning !== void 0 && (!isTokenCount(reasoning) || reasoning > output)) {
+		debugLog("dropping usage: implausible cached/reasoning details", usage);
+		return;
+	}
+	return {
+		prompt_tokens: input,
+		completion_tokens: output,
+		total_tokens: total,
+		...cached$1 !== void 0 ? { prompt_tokens_details: { cached_tokens: cached$1 } } : {},
+		...reasoning !== void 0 ? { completion_tokens_details: { reasoning_tokens: reasoning } } : {}
+	};
 }
 /** Build a clip() that truncates long strings to `maxChars`. */
 function makeClip(maxChars) {

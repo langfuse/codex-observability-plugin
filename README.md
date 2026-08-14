@@ -32,17 +32,23 @@ codex plugin marketplace add langfuse/codex-observability-plugin
 
 ### 2. Enable the plugin
 
-Enable plugin hooks and the tracing plugin globally in `~/.codex/config.toml`, or only for a specific project in `<project>/.codex/config.toml`:
+Enable hooks and the tracing plugin globally in `~/.codex/config.toml`, or only for a specific project in `<project>/.codex/config.toml`. Use the current `hooks` feature key; `plugin_hooks` was removed in Codex 0.146.
 
 ```toml
 [features]
-plugin_hooks = true
+hooks = true
 
 [plugins."tracing@codex-observability-plugin"]
 enabled = true
 ```
 
-### 3. Set your Langfuse credentials
+### 3. Review and trust the hook
+
+Start Codex after installing and enabling the plugin. When **Hooks need review** appears, review the Langfuse `Stop` hook and trust it before expecting traces. In the Codex CLI, you can also run `/hooks` to inspect, review, and trust the hook.
+
+Codex records trust against the current hook hash, so plugin updates can change the hash and require another review.
+
+### 4. Set your Langfuse credentials
 
 Tracing stays off until `TRACE_TO_LANGFUSE` is `true`, so you opt in explicitly.
 
@@ -72,7 +78,7 @@ Create `~/.codex/langfuse.json` (global) or `<project>/.codex/langfuse.json` (pe
 
 Config is resolved as **defaults → `~/.codex/langfuse.json` → `<project>/.codex/langfuse.json` → environment variables** (environment wins). `LANGFUSE_CODEX_*` variables take precedence over the matching standard `LANGFUSE_*` variables, so you can scope credentials to Codex without disturbing other Langfuse tooling.
 
-### 4. Get your Langfuse API keys
+### 5. Get your Langfuse API keys
 
 1. Go to [cloud.langfuse.com](https://cloud.langfuse.com) (or your self-hosted instance).
 2. Create a project (or open an existing one).
@@ -165,7 +171,8 @@ The same works from JavaScript with the Langfuse SDK: `await createTraceId(`${se
 
 ## Troubleshooting
 
-- **No traces appear** — confirm `plugin_hooks = true`, the plugin is enabled in `config.toml`, and `TRACE_TO_LANGFUSE=true` is visible to the Codex process. Run with `LANGFUSE_CODEX_DEBUG=true` to log to stderr.
+- **No traces appear** — confirm `[features] hooks = true`, the plugin is enabled in `config.toml`, and `TRACE_TO_LANGFUSE=true` is visible to the Codex process. Run `codex features list` to verify hooks are enabled and `codex plugin list` to verify `tracing@codex-observability-plugin` is installed and enabled. Run with `LANGFUSE_CODEX_DEBUG=true` to log to stderr.
+- **Hook is installed but does not run** — `codex plugin list` showing the plugin as installed and enabled does not mean the hook is trusted. Open `/hooks`, review the Langfuse `Stop` hook, and trust the current hook hash. A successful test should show `hook: Stop` followed by `hook: Stop Completed`.
 - **Authentication fails** — check that the public/secret keys are valid and that `LANGFUSE_BASE_URL` matches the region the keys belong to.
 - **Traces land in the wrong project** — API keys are project-scoped in Langfuse; use the keys for the project you want.
 - **Testing hook failures** — set `LANGFUSE_CODEX_FAIL_ON_ERROR=true` together with `LANGFUSE_CODEX_DEBUG=true` to make Codex report upload or flush errors instead of failing open.
