@@ -46718,6 +46718,9 @@ function parseSession(lines) {
 			const p = line.payload;
 			sessionMeta = {
 				sessionId: typeof p.id === "string" ? p.id : sessionMeta.sessionId,
+				cwd: p.cwd,
+				gitBranch: p.git?.branch ?? void 0,
+				gitRepository: p.git?.repository_url ?? void 0,
 				cliVersion: p.cli_version,
 				modelProvider: p.model_provider ?? void 0,
 				baseInstructions: p.base_instructions?.text,
@@ -47072,6 +47075,10 @@ async function emitTurn(turn, sessionMeta, ctx) {
 		metadata: {
 			"codex.turn_id": turn.turnId,
 			"codex.thread_id": sessionMeta.sessionId,
+			project: sessionMeta.cwd ? path.basename(sessionMeta.cwd) : void 0,
+			cwd: sessionMeta.cwd,
+			git_branch: sessionMeta.gitBranch,
+			git_repository: sessionMeta.gitRepository,
 			"codex.model": turn.model,
 			"codex.model_provider": sessionMeta.modelProvider,
 			"codex.cli_version": sessionMeta.cliVersion,

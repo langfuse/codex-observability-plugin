@@ -1,4 +1,4 @@
-{"timestamp":"2026-06-03T10:00:00.000Z","type":"session_meta","payload":{"id":"sess-basic","cli_version":"0.123.0","model_provider":"openai","base_instructions":{"text":"You are Codex."}}}
+{"timestamp":"2026-06-03T10:00:00.000Z","type":"session_meta","payload":{"id":"sess-basic","cwd":"/repo/workspace","git":{"branch":"feature/test","repository_url":"git@github.com:example/workspace.git"},"cli_version":"0.123.0","model_provider":"openai","base_instructions":{"text":"You are Codex."}}}
 {"timestamp":"2026-06-03T10:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
 {"timestamp":"2026-06-03T10:00:01.100Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<environment_context>cwd=/repo</environment_context>"}]}}
 {"timestamp":"2026-06-03T10:00:01.200Z","type":"turn_context","payload":{"model":"gpt-5.4","effort":"medium"}}

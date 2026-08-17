@@ -79,6 +79,9 @@ describe("convertRollout", () => {
     expect(parentId(root!)).toBeUndefined(); // top-level turn = its own trace
     expect(attr(root!, "langfuse.observation.input")).toContain("List the files");
     expect(attr(root!, "langfuse.observation.output")).toContain("two files");
+    expect(attr(root!, "langfuse.observation.metadata.project")).toBe("workspace");
+    expect(attr(root!, "langfuse.observation.metadata.cwd")).toBe("/repo/workspace");
+    expect(attr(root!, "langfuse.observation.metadata.git_branch")).toBe("feature/test");
 
     // Backdated to the turn's task_started timestamp.
     expect(startMs(root!)).toBe(Date.parse("2026-06-03T10:00:01.000Z"));

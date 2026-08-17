@@ -228,6 +228,10 @@ async function emitTurn(
       metadata: {
         "codex.turn_id": turn.turnId,
         "codex.thread_id": sessionMeta.sessionId,
+        project: sessionMeta.cwd ? path.basename(sessionMeta.cwd) : undefined,
+        cwd: sessionMeta.cwd,
+        git_branch: sessionMeta.gitBranch,
+        git_repository: sessionMeta.gitRepository,
         "codex.model": turn.model,
         "codex.model_provider": sessionMeta.modelProvider,
         "codex.cli_version": sessionMeta.cliVersion,
