@@ -215,6 +215,35 @@ describe("convertRollout", () => {
     await convertRollout(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
+
+  it("waits for an in-progress turn instead of uploading it twice", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+    const completed = fs.readFileSync(file, "utf-8");
+    fs.writeFileSync(file, completed.replace(/^.*"task_complete".*\n?$/m, ""));
+
+    await convertRollout(file, { config: baseConfig });
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+    expect(fs.existsSync(`${file}.langfuse`)).toBe(false);
+
+    fs.writeFileSync(file, completed);
+    await convertRollout(file, { config: baseConfig });
+    expect(exporter.getFinishedSpans().some((span) => span.name === "Codex Turn")).toBe(true);
+  });
+
+  it("serializes concurrent uploads of the same rollout", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+
+    await Promise.all([
+      convertRollout(file, { config: baseConfig }),
+      convertRollout(file, { config: baseConfig }),
+    ]);
+
+    expect(exporter.getFinishedSpans().filter((span) => span.name === "Codex Turn")).toHaveLength(
+      1,
+    );
+  });
 });
 
 describe("deterministic trace ids (trace_seed)", () => {

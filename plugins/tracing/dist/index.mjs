@@ -46892,8 +46892,7 @@ function parseSession(lines) {
 * The `Stop` hook fires after every Codex turn and re-reads the whole rollout
 * file, so completed turns would be re-uploaded each time. We record uploaded
 * turn ids in a sidecar file (`<rolloutFile>.langfuse`) and skip them on
-* subsequent invocations. In-progress (not-yet-completed) turns are uploaded
-* but intentionally not recorded, so they finalize on the next hook run.
+* subsequent invocations.
 */
 async function loadUploadedTurnIds(rolloutFile) {
 	try {
@@ -46908,6 +46907,28 @@ async function markTurnUploaded(rolloutFile, turnId) {
 	try {
 		await fs.appendFile(`${rolloutFile}.langfuse`, `${turnId}\n`, "utf-8");
 	} catch {}
+}
+async function claimRolloutUpload(rolloutFile) {
+	const lockFile = `${rolloutFile}.langfuse.lock`;
+	let lock;
+	try {
+		lock = await fs.open(lockFile, "wx");
+	} catch (error) {
+		if (error.code !== "EEXIST") throw error;
+		try {
+			const stat = await fs.stat(lockFile);
+			if (Date.now() - stat.mtimeMs <= 6e4) return void 0;
+			await fs.unlink(lockFile);
+			return claimRolloutUpload(rolloutFile);
+		} catch (lockError) {
+			if (lockError.code === "ENOENT") return claimRolloutUpload(rolloutFile);
+			throw lockError;
+		}
+	}
+	return async () => {
+		await lock.close();
+		await fs.unlink(lockFile).catch(() => void 0);
+	};
 }
 
 //#endregion
@@ -47121,6 +47142,15 @@ function emitToolCall(tc, parent, clip, fallbackEnd) {
 * turn via `parentObservation`.
 */
 async function convertRollout(rolloutFile, options) {
+	const releaseUpload = options.parentObservation ? void 0 : await claimRolloutUpload(rolloutFile);
+	if (!options.parentObservation && !releaseUpload) return;
+	try {
+		await convertClaimedRollout(rolloutFile, options);
+	} finally {
+		await releaseUpload?.();
+	}
+}
+async function convertClaimedRollout(rolloutFile, options) {
 	const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
 	debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 	if (options.parentObservation) {
@@ -47134,7 +47164,11 @@ async function convertRollout(rolloutFile, options) {
 	const uploaded = await loadUploadedTurnIds(rolloutFile);
 	for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
 		const turn = turns[turnIndex];
-		if (turn.completed && turn.turnId && uploaded.has(turn.turnId)) continue;
+		if (!turn.completed) {
+			debugLog(`waiting for in-progress turn ${turn.turnId ?? turnIndex + 1} to complete`);
+			continue;
+		}
+		if (turn.turnId && uploaded.has(turn.turnId)) continue;
 		const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
 		await propagateAttributes({
 			sessionId: sessionMeta.sessionId,
@@ -47149,10 +47183,10 @@ async function convertRollout(rolloutFile, options) {
 				seededParent
 			});
 		});
-		if (turn.completed && turn.turnId) {
+		if (turn.turnId) {
 			uploaded.add(turn.turnId);
 			await markTurnUploaded(rolloutFile, turn.turnId);
-		} else if (turn.turnId) debugLog(`uploaded in-progress turn ${turn.turnId}; waiting for completion before sidecar mark`);
+		}
 	}
 }
 

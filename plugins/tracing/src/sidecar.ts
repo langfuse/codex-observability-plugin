@@ -6,8 +6,7 @@ import * as fs from "node:fs/promises";
  * The `Stop` hook fires after every Codex turn and re-reads the whole rollout
  * file, so completed turns would be re-uploaded each time. We record uploaded
  * turn ids in a sidecar file (`<rolloutFile>.langfuse`) and skip them on
- * subsequent invocations. In-progress (not-yet-completed) turns are uploaded
- * but intentionally not recorded, so they finalize on the next hook run.
+ * subsequent invocations.
  */
 export async function loadUploadedTurnIds(rolloutFile: string): Promise<Set<string>> {
   try {
@@ -25,4 +24,32 @@ export async function markTurnUploaded(rolloutFile: string, turnId: string): Pro
   } catch {
     // Best-effort: a failed write only risks a duplicate upload next time.
   }
+}
+
+export async function claimRolloutUpload(
+  rolloutFile: string,
+): Promise<(() => Promise<void>) | undefined> {
+  const lockFile = `${rolloutFile}.langfuse.lock`;
+  let lock: fs.FileHandle;
+  try {
+    lock = await fs.open(lockFile, "wx");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    try {
+      const stat = await fs.stat(lockFile);
+      if (Date.now() - stat.mtimeMs <= 60_000) return undefined;
+      await fs.unlink(lockFile);
+      return claimRolloutUpload(rolloutFile);
+    } catch (lockError) {
+      if ((lockError as NodeJS.ErrnoException).code === "ENOENT") {
+        return claimRolloutUpload(rolloutFile);
+      }
+      throw lockError;
+    }
+  }
+
+  return async () => {
+    await lock.close();
+    await fs.unlink(lockFile).catch(() => undefined);
+  };
 }
