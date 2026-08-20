@@ -31,6 +31,21 @@ function extractMessageText(content: MessageContentPart[] | undefined): string {
     .join("\n");
 }
 
+function extractCompletedUserMessage(payload: EventMsgPayload): string {
+  const item = payload.item;
+  if (!item || typeof item !== "object") return "";
+  if (!("type" in item) || item.type !== "UserMessage") return "";
+  return extractMessageText((item as { content?: MessageContentPart[] }).content);
+}
+
+function isInstructionWrapperMessage(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    /<\/?(environment_context|user_instructions)\b/.test(trimmed) ||
+    /^# AGENTS\.md instructions for\b/.test(trimmed)
+  );
+}
+
 /** Extract reasoning text, skipping encrypted-only reasoning items. */
 function extractReasoning(item: {
   content?: unknown[] | string | null;
@@ -204,11 +219,8 @@ export function parseSession(lines: RolloutLine[]): {
           if (text) s.text = s.text ? `${s.text}\n${text}` : text;
         } else if (msg.role === "user" && text) {
           // Codex injects <environment_context>/<user_instructions> as user
-          // messages; keep only the first that does not look like wrapper XML.
-          if (
-            !turn!.userInputFallback &&
-            !/^<(environment_context|user_instructions)/.test(text.trim())
-          ) {
+          // messages; keep only the first that does not look like wrapper content.
+          if (!turn!.userInputFallback && !isInstructionWrapperMessage(text)) {
             turn!.userInputFallback = text;
           }
         }
@@ -301,7 +313,12 @@ export function parseSession(lines: RolloutLine[]): {
 
       ensureTurn(ts);
 
-      if (et === "user_message" && typeof p.message === "string") {
+      if (et === "item_completed") {
+        const text = extractCompletedUserMessage(p);
+        if (text && !isInstructionWrapperMessage(text) && !turn!.userInput) {
+          turn!.userInput = text;
+        }
+      } else if (et === "user_message" && typeof p.message === "string") {
         if (!turn!.userInput) turn!.userInput = p.message;
       } else if (et === "agent_message" && typeof p.message === "string") {
         turn!.lastAgentMessage = p.message;

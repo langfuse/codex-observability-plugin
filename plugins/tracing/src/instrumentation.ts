@@ -1,4 +1,5 @@
 import { LangfuseSpanProcessor } from "@langfuse/otel";
+import { setLangfuseTracerProvider } from "@langfuse/tracing";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 
 import type { Config } from "./config.js";
@@ -36,11 +37,13 @@ export function setupInstrumentation(config: Config): Instrumentation {
     spanProcessors: [spanProcessor],
   });
   provider.register();
+  setLangfuseTracerProvider(provider);
 
   return {
     shutdown: async () => {
       await spanProcessor.forceFlush();
       await provider.shutdown();
+      setLangfuseTracerProvider(null);
     },
   };
 }
