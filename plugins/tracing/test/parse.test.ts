@@ -202,6 +202,59 @@ describe("parseSession", () => {
     expect(turns[0].userInput).toBe("real question");
   });
 
+  it("uses item_completed UserMessage events before instruction-wrapper fallbacks", () => {
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-06-03T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:01.100Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "# AGENTS.md instructions for /repo\n\nFollow these.\n</environment_context>",
+            },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:01.200Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: 'hi from codex. say "Hi"' }],
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:01.300Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "UserMessage",
+            content: [{ type: "input_text", text: 'hi from codex. say "Hi"' }],
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t" },
+      },
+    ];
+
+    const { turns } = parseSession(lines);
+    expect(turns[0].userInput).toBe('hi from codex. say "Hi"');
+  });
+
   it("captures web search, local shell, and MCP tool calls", () => {
     const { turns } = parseSession(loadFixture("rollout-tools-main.jsonl"));
 

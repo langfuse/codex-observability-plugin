@@ -45627,6 +45627,468 @@ ${JSON.stringify({
 };
 
 //#endregion
+//#region ../../node_modules/.pnpm/@langfuse+tracing@5.4.1_@opentelemetry+api@1.9.1/node_modules/@langfuse/tracing/dist/index.mjs
+init_esm$2();
+function createTraceAttributes({ input, output } = {}) {
+	const attributes = {
+		[LangfuseOtelSpanAttributes.TRACE_INPUT]: _serialize(input),
+		[LangfuseOtelSpanAttributes.TRACE_OUTPUT]: _serialize(output)
+	};
+	return Object.fromEntries(Object.entries(attributes).filter(([_, v]) => v != null));
+}
+function createObservationAttributes(type, attributes) {
+	const { metadata, input, output, level, statusMessage, version: version$1, completionStartTime, model, modelParameters, usageDetails, costDetails, prompt } = attributes;
+	let otelAttributes = {
+		[LangfuseOtelSpanAttributes.OBSERVATION_TYPE]: type,
+		[LangfuseOtelSpanAttributes.OBSERVATION_LEVEL]: level,
+		[LangfuseOtelSpanAttributes.OBSERVATION_STATUS_MESSAGE]: statusMessage,
+		[LangfuseOtelSpanAttributes.VERSION]: version$1,
+		[LangfuseOtelSpanAttributes.OBSERVATION_INPUT]: _serialize(input),
+		[LangfuseOtelSpanAttributes.OBSERVATION_OUTPUT]: _serialize(output),
+		[LangfuseOtelSpanAttributes.OBSERVATION_MODEL]: model,
+		[LangfuseOtelSpanAttributes.OBSERVATION_USAGE_DETAILS]: _serialize(usageDetails),
+		[LangfuseOtelSpanAttributes.OBSERVATION_COST_DETAILS]: _serialize(costDetails),
+		[LangfuseOtelSpanAttributes.OBSERVATION_COMPLETION_START_TIME]: _serialize(completionStartTime),
+		[LangfuseOtelSpanAttributes.OBSERVATION_MODEL_PARAMETERS]: _serialize(modelParameters),
+		...prompt && !prompt.isFallback ? {
+			[LangfuseOtelSpanAttributes.OBSERVATION_PROMPT_NAME]: prompt.name,
+			[LangfuseOtelSpanAttributes.OBSERVATION_PROMPT_VERSION]: prompt.version
+		} : {},
+		..._flattenAndSerializeMetadata(metadata, "observation")
+	};
+	return Object.fromEntries(Object.entries(otelAttributes).filter(([_, v]) => v != null));
+}
+function _serialize(obj) {
+	try {
+		if (typeof obj === "string") return obj;
+		return obj != null ? JSON.stringify(obj) : void 0;
+	} catch {
+		return "<failed to serialize>";
+	}
+}
+function _flattenAndSerializeMetadata(metadata, type) {
+	const prefix = type === "observation" ? LangfuseOtelSpanAttributes.OBSERVATION_METADATA : LangfuseOtelSpanAttributes.TRACE_METADATA;
+	const metadataAttributes = {};
+	if (metadata === void 0 || metadata === null) return metadataAttributes;
+	if (typeof metadata !== "object" || Array.isArray(metadata)) {
+		const serialized = _serialize(metadata);
+		if (serialized) metadataAttributes[prefix] = serialized;
+	} else for (const [key, value] of Object.entries(metadata)) {
+		const serialized = typeof value === "string" ? value : _serialize(value);
+		if (serialized) metadataAttributes[`${prefix}.${key}`] = serialized;
+	}
+	return metadataAttributes;
+}
+var LANGFUSE_GLOBAL_SYMBOL = Symbol.for("langfuse");
+function createState() {
+	return { isolatedTracerProvider: null };
+}
+function getGlobalState() {
+	const initialState = createState();
+	try {
+		const g = globalThis;
+		if (typeof g !== "object" || g === null) {
+			getGlobalLogger().warn("globalThis is not available, using fallback state");
+			return initialState;
+		}
+		if (!g[LANGFUSE_GLOBAL_SYMBOL]) Object.defineProperty(g, LANGFUSE_GLOBAL_SYMBOL, {
+			value: initialState,
+			writable: false,
+			configurable: false,
+			enumerable: false
+		});
+		return g[LANGFUSE_GLOBAL_SYMBOL];
+	} catch (err) {
+		if (err instanceof Error) getGlobalLogger().error(`Failed to access global state: ${err.message}`);
+		else getGlobalLogger().error(`Failed to access global state: ${String(err)}`);
+		return initialState;
+	}
+}
+function setLangfuseTracerProvider(provider) {
+	getGlobalState().isolatedTracerProvider = provider;
+}
+function getLangfuseTracerProvider() {
+	const { isolatedTracerProvider } = getGlobalState();
+	if (isolatedTracerProvider) return isolatedTracerProvider;
+	return trace.getTracerProvider();
+}
+function getLangfuseTracer() {
+	return getLangfuseTracerProvider().getTracer(LANGFUSE_TRACER_NAME, LANGFUSE_SDK_VERSION);
+}
+var LangfuseBaseObservation = class {
+	constructor(params) {
+		this.otelSpan = params.otelSpan;
+		this.id = params.otelSpan.spanContext().spanId;
+		this.traceId = params.otelSpan.spanContext().traceId;
+		this.type = params.type;
+		if (params.attributes) this.otelSpan.setAttributes(createObservationAttributes(params.type, params.attributes));
+	}
+	/** Gets the Langfuse OpenTelemetry tracer instance */
+	get tracer() {
+		return getLangfuseTracer();
+	}
+	/**
+	* Ends the observation, marking it as complete.
+	*
+	* @param endTime - Optional end time, defaults to current time
+	*/
+	end(endTime) {
+		this.otelSpan.end(endTime);
+	}
+	updateOtelSpanAttributes(attributes) {
+		this.otelSpan.setAttributes(createObservationAttributes(this.type, attributes));
+	}
+	/**
+	* Set trace-level input and output for the trace this observation belongs to.
+	*
+	* @deprecated This is a legacy method for backward compatibility with Langfuse platform
+	* features that still rely on trace-level input/output (e.g., legacy LLM-as-a-judge
+	* evaluators). It will be removed in a future major version.
+	*
+	* For setting other trace attributes (userId, sessionId, metadata, tags, version),
+	* use {@link propagateAttributes} instead.
+	*
+	* @param attributes - Input and output data to associate with the trace
+	* @returns The observation instance for method chaining
+	*
+	* @example
+	* ```typescript
+	* const span = startObservation('my-operation');
+	* span.setTraceIO({
+	*   input: { query: 'user question' },
+	*   output: { response: 'assistant answer' }
+	* });
+	* ```
+	*/
+	setTraceIO(attributes) {
+		this.otelSpan.setAttributes(createTraceAttributes(attributes));
+		return this;
+	}
+	/**
+	* Make the trace this observation belongs to publicly accessible via its URL.
+	*
+	* When a trace is published, anyone with the trace link can view the full trace
+	* without needing to be logged in to Langfuse. This action cannot be undone
+	* programmatically - once any span in a trace is published, the entire trace
+	* becomes public.
+	*
+	* @returns The observation instance for method chaining
+	*
+	* @example
+	* ```typescript
+	* const span = startObservation('my-operation');
+	* span.setTraceAsPublic();
+	* ```
+	*/
+	setTraceAsPublic() {
+		this.otelSpan.setAttributes({ [LangfuseOtelSpanAttributes.TRACE_PUBLIC]: true });
+		return this;
+	}
+	startObservation(name, attributes, options) {
+		const { asType = "span" } = options || {};
+		return startObservation(name, attributes, {
+			asType,
+			parentSpanContext: this.otelSpan.spanContext()
+		});
+	}
+};
+var LangfuseSpan = class extends LangfuseBaseObservation {
+	constructor(params) {
+		super({
+			...params,
+			type: "span"
+		});
+	}
+	/**
+	* Updates this span with new attributes.
+	*
+	* @param attributes - Span attributes to set
+	* @returns This span for method chaining
+	*
+	* @example
+	* ```typescript
+	* span.update({
+	*   output: { result: 'success' },
+	*   level: 'DEFAULT',
+	*   metadata: { duration: 150 }
+	* });
+	* ```
+	*/
+	update(attributes) {
+		super.updateOtelSpanAttributes(attributes);
+		return this;
+	}
+};
+var LangfuseAgent = class extends LangfuseBaseObservation {
+	constructor(params) {
+		super({
+			...params,
+			type: "agent"
+		});
+	}
+	/**
+	* Updates this agent observation with new attributes.
+	*
+	* @param attributes - Agent attributes to set
+	* @returns This agent for method chaining
+	*
+	* @example
+	* ```typescript
+	* agent.update({
+	*   output: {
+	*     taskCompleted: true,
+	*     iterationsUsed: 5,
+	*     toolsInvoked: ['web-search', 'calculator', 'summarizer'],
+	*     finalResult: 'Research completed with high confidence'
+	*   },
+	*   metadata: {
+	*     efficiency: 0.85,
+	*     qualityScore: 0.92,
+	*     resourcesConsumed: { tokens: 15000, apiCalls: 12 }
+	*   }
+	* });
+	* ```
+	*/
+	update(attributes) {
+		super.updateOtelSpanAttributes(attributes);
+		return this;
+	}
+};
+var LangfuseTool = class extends LangfuseBaseObservation {
+	constructor(params) {
+		super({
+			...params,
+			type: "tool"
+		});
+	}
+	/**
+	* Updates this tool observation with new attributes.
+	*
+	* @param attributes - Tool attributes to set
+	* @returns This tool for method chaining
+	*
+	* @example
+	* ```typescript
+	* tool.update({
+	*   output: {
+	*     result: searchResults,
+	*     count: searchResults.length,
+	*     relevanceScore: 0.89,
+	*     executionTime: 1250
+	*   },
+	*   metadata: {
+	*     cacheHit: false,
+	*     apiCost: 0.025,
+	*     rateLimitRemaining: 950
+	*   }
+	* });
+	* ```
+	*/
+	update(attributes) {
+		super.updateOtelSpanAttributes(attributes);
+		return this;
+	}
+};
+var LangfuseChain = class extends LangfuseBaseObservation {
+	constructor(params) {
+		super({
+			...params,
+			type: "chain"
+		});
+	}
+	/**
+	* Updates this chain observation with new attributes.
+	*
+	* @param attributes - Chain attributes to set
+	* @returns This chain for method chaining
+	*
+	* @example
+	* ```typescript
+	* chain.update({
+	*   output: {
+	*     stepsCompleted: 5,
+	*     stepsSuccessful: 4,
+	*     finalResult: processedData,
+	*     pipelineEfficiency: 0.87
+	*   },
+	*   metadata: {
+	*     bottleneckStep: 'data-validation',
+	*     parallelizationOpportunities: ['step-2', 'step-3'],
+	*     optimizationSuggestions: ['cache-intermediate-results']
+	*   }
+	* });
+	* ```
+	*/
+	update(attributes) {
+		super.updateOtelSpanAttributes(attributes);
+		return this;
+	}
+};
+var LangfuseRetriever = class extends LangfuseBaseObservation {
+	constructor(params) {
+		super({
+			...params,
+			type: "retriever"
+		});
+	}
+	/**
+	* Updates this retriever observation with new attributes.
+	*
+	* @param attributes - Retriever attributes to set
+	* @returns This retriever for method chaining
+	*/
+	update(attributes) {
+		super.updateOtelSpanAttributes(attributes);
+		return this;
+	}
+};
+var LangfuseEvaluator = class extends LangfuseBaseObservation {
+	constructor(params) {
+		super({
+			...params,
+			type: "evaluator"
+		});
+	}
+	/**
+	* Updates this evaluator observation with new attributes.
+	*
+	* @param attributes - Evaluator attributes to set
+	* @returns This evaluator for method chaining
+	*/
+	update(attributes) {
+		super.updateOtelSpanAttributes(attributes);
+		return this;
+	}
+};
+var LangfuseGuardrail = class extends LangfuseBaseObservation {
+	constructor(params) {
+		super({
+			...params,
+			type: "guardrail"
+		});
+	}
+	/**
+	* Updates this guardrail observation with new attributes.
+	*
+	* @param attributes - Guardrail attributes to set
+	* @returns This guardrail for method chaining
+	*/
+	update(attributes) {
+		super.updateOtelSpanAttributes(attributes);
+		return this;
+	}
+};
+var LangfuseGeneration = class extends LangfuseBaseObservation {
+	constructor(params) {
+		super({
+			...params,
+			type: "generation"
+		});
+	}
+	update(attributes) {
+		this.updateOtelSpanAttributes(attributes);
+		return this;
+	}
+};
+var LangfuseEmbedding = class extends LangfuseBaseObservation {
+	constructor(params) {
+		super({
+			...params,
+			type: "embedding"
+		});
+	}
+	/**
+	* Updates this embedding observation with new attributes.
+	*
+	* @param attributes - Embedding attributes to set
+	* @returns This embedding for method chaining
+	*/
+	update(attributes) {
+		this.updateOtelSpanAttributes(attributes);
+		return this;
+	}
+};
+var LangfuseEvent = class extends LangfuseBaseObservation {
+	constructor(params) {
+		super({
+			...params,
+			type: "event"
+		});
+		this.otelSpan.end(params.timestamp);
+	}
+};
+function createOtelSpan(params) {
+	return getLangfuseTracer().startSpan(params.name, { startTime: params.startTime }, createParentContext(params.parentSpanContext));
+}
+function createParentContext(parentSpanContext) {
+	if (!parentSpanContext) return;
+	return trace.setSpanContext(context.active(), parentSpanContext);
+}
+function startObservation(name, attributes, options) {
+	var _a$3;
+	const { asType = "span", ...observationOptions } = options || {};
+	const otelSpan = createOtelSpan({
+		name,
+		...observationOptions
+	});
+	switch (asType) {
+		case "generation": return new LangfuseGeneration({
+			otelSpan,
+			attributes
+		});
+		case "embedding": return new LangfuseEmbedding({
+			otelSpan,
+			attributes
+		});
+		case "agent": return new LangfuseAgent({
+			otelSpan,
+			attributes
+		});
+		case "tool": return new LangfuseTool({
+			otelSpan,
+			attributes
+		});
+		case "chain": return new LangfuseChain({
+			otelSpan,
+			attributes
+		});
+		case "retriever": return new LangfuseRetriever({
+			otelSpan,
+			attributes
+		});
+		case "evaluator": return new LangfuseEvaluator({
+			otelSpan,
+			attributes
+		});
+		case "guardrail": return new LangfuseGuardrail({
+			otelSpan,
+			attributes
+		});
+		case "event": return new LangfuseEvent({
+			otelSpan,
+			attributes,
+			timestamp: (_a$3 = observationOptions == null ? void 0 : observationOptions.startTime) != null ? _a$3 : /* @__PURE__ */ new Date()
+		});
+		case "span":
+		default: return new LangfuseSpan({
+			otelSpan,
+			attributes
+		});
+	}
+}
+async function createTraceId(seed) {
+	if (seed) {
+		const data = new TextEncoder().encode(seed);
+		const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+		return uint8ArrayToHex(new Uint8Array(hashBuffer)).slice(0, 32);
+	}
+	return uint8ArrayToHex(crypto.getRandomValues(new Uint8Array(16)));
+}
+function uint8ArrayToHex(array$1) {
+	return Array.from(array$1).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+//#endregion
 //#region ../../node_modules/.pnpm/@opentelemetry+context-async-hooks@2.7.1_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/context-async-hooks/build/src/AbstractAsyncHooksContextManager.js
 var require_AbstractAsyncHooksContextManager = /* @__PURE__ */ __commonJSMin(((exports) => {
 	Object.defineProperty(exports, "__esModule", { value: true });
@@ -46089,469 +46551,12 @@ function setupInstrumentation(config$1) {
 	});
 	const provider = new import_src.NodeTracerProvider({ spanProcessors: [spanProcessor] });
 	provider.register();
+	setLangfuseTracerProvider(provider);
 	return { shutdown: async () => {
 		await spanProcessor.forceFlush();
 		await provider.shutdown();
+		setLangfuseTracerProvider(null);
 	} };
-}
-
-//#endregion
-//#region ../../node_modules/.pnpm/@langfuse+tracing@5.4.1_@opentelemetry+api@1.9.1/node_modules/@langfuse/tracing/dist/index.mjs
-init_esm$2();
-function createTraceAttributes({ input, output } = {}) {
-	const attributes = {
-		[LangfuseOtelSpanAttributes.TRACE_INPUT]: _serialize(input),
-		[LangfuseOtelSpanAttributes.TRACE_OUTPUT]: _serialize(output)
-	};
-	return Object.fromEntries(Object.entries(attributes).filter(([_, v]) => v != null));
-}
-function createObservationAttributes(type, attributes) {
-	const { metadata, input, output, level, statusMessage, version: version$1, completionStartTime, model, modelParameters, usageDetails, costDetails, prompt } = attributes;
-	let otelAttributes = {
-		[LangfuseOtelSpanAttributes.OBSERVATION_TYPE]: type,
-		[LangfuseOtelSpanAttributes.OBSERVATION_LEVEL]: level,
-		[LangfuseOtelSpanAttributes.OBSERVATION_STATUS_MESSAGE]: statusMessage,
-		[LangfuseOtelSpanAttributes.VERSION]: version$1,
-		[LangfuseOtelSpanAttributes.OBSERVATION_INPUT]: _serialize(input),
-		[LangfuseOtelSpanAttributes.OBSERVATION_OUTPUT]: _serialize(output),
-		[LangfuseOtelSpanAttributes.OBSERVATION_MODEL]: model,
-		[LangfuseOtelSpanAttributes.OBSERVATION_USAGE_DETAILS]: _serialize(usageDetails),
-		[LangfuseOtelSpanAttributes.OBSERVATION_COST_DETAILS]: _serialize(costDetails),
-		[LangfuseOtelSpanAttributes.OBSERVATION_COMPLETION_START_TIME]: _serialize(completionStartTime),
-		[LangfuseOtelSpanAttributes.OBSERVATION_MODEL_PARAMETERS]: _serialize(modelParameters),
-		...prompt && !prompt.isFallback ? {
-			[LangfuseOtelSpanAttributes.OBSERVATION_PROMPT_NAME]: prompt.name,
-			[LangfuseOtelSpanAttributes.OBSERVATION_PROMPT_VERSION]: prompt.version
-		} : {},
-		..._flattenAndSerializeMetadata(metadata, "observation")
-	};
-	return Object.fromEntries(Object.entries(otelAttributes).filter(([_, v]) => v != null));
-}
-function _serialize(obj) {
-	try {
-		if (typeof obj === "string") return obj;
-		return obj != null ? JSON.stringify(obj) : void 0;
-	} catch {
-		return "<failed to serialize>";
-	}
-}
-function _flattenAndSerializeMetadata(metadata, type) {
-	const prefix = type === "observation" ? LangfuseOtelSpanAttributes.OBSERVATION_METADATA : LangfuseOtelSpanAttributes.TRACE_METADATA;
-	const metadataAttributes = {};
-	if (metadata === void 0 || metadata === null) return metadataAttributes;
-	if (typeof metadata !== "object" || Array.isArray(metadata)) {
-		const serialized = _serialize(metadata);
-		if (serialized) metadataAttributes[prefix] = serialized;
-	} else for (const [key, value] of Object.entries(metadata)) {
-		const serialized = typeof value === "string" ? value : _serialize(value);
-		if (serialized) metadataAttributes[`${prefix}.${key}`] = serialized;
-	}
-	return metadataAttributes;
-}
-var LANGFUSE_GLOBAL_SYMBOL = Symbol.for("langfuse");
-function createState() {
-	return { isolatedTracerProvider: null };
-}
-function getGlobalState() {
-	const initialState = createState();
-	try {
-		const g = globalThis;
-		if (typeof g !== "object" || g === null) {
-			getGlobalLogger().warn("globalThis is not available, using fallback state");
-			return initialState;
-		}
-		if (!g[LANGFUSE_GLOBAL_SYMBOL]) Object.defineProperty(g, LANGFUSE_GLOBAL_SYMBOL, {
-			value: initialState,
-			writable: false,
-			configurable: false,
-			enumerable: false
-		});
-		return g[LANGFUSE_GLOBAL_SYMBOL];
-	} catch (err) {
-		if (err instanceof Error) getGlobalLogger().error(`Failed to access global state: ${err.message}`);
-		else getGlobalLogger().error(`Failed to access global state: ${String(err)}`);
-		return initialState;
-	}
-}
-function getLangfuseTracerProvider() {
-	const { isolatedTracerProvider } = getGlobalState();
-	if (isolatedTracerProvider) return isolatedTracerProvider;
-	return trace.getTracerProvider();
-}
-function getLangfuseTracer() {
-	return getLangfuseTracerProvider().getTracer(LANGFUSE_TRACER_NAME, LANGFUSE_SDK_VERSION);
-}
-var LangfuseBaseObservation = class {
-	constructor(params) {
-		this.otelSpan = params.otelSpan;
-		this.id = params.otelSpan.spanContext().spanId;
-		this.traceId = params.otelSpan.spanContext().traceId;
-		this.type = params.type;
-		if (params.attributes) this.otelSpan.setAttributes(createObservationAttributes(params.type, params.attributes));
-	}
-	/** Gets the Langfuse OpenTelemetry tracer instance */
-	get tracer() {
-		return getLangfuseTracer();
-	}
-	/**
-	* Ends the observation, marking it as complete.
-	*
-	* @param endTime - Optional end time, defaults to current time
-	*/
-	end(endTime) {
-		this.otelSpan.end(endTime);
-	}
-	updateOtelSpanAttributes(attributes) {
-		this.otelSpan.setAttributes(createObservationAttributes(this.type, attributes));
-	}
-	/**
-	* Set trace-level input and output for the trace this observation belongs to.
-	*
-	* @deprecated This is a legacy method for backward compatibility with Langfuse platform
-	* features that still rely on trace-level input/output (e.g., legacy LLM-as-a-judge
-	* evaluators). It will be removed in a future major version.
-	*
-	* For setting other trace attributes (userId, sessionId, metadata, tags, version),
-	* use {@link propagateAttributes} instead.
-	*
-	* @param attributes - Input and output data to associate with the trace
-	* @returns The observation instance for method chaining
-	*
-	* @example
-	* ```typescript
-	* const span = startObservation('my-operation');
-	* span.setTraceIO({
-	*   input: { query: 'user question' },
-	*   output: { response: 'assistant answer' }
-	* });
-	* ```
-	*/
-	setTraceIO(attributes) {
-		this.otelSpan.setAttributes(createTraceAttributes(attributes));
-		return this;
-	}
-	/**
-	* Make the trace this observation belongs to publicly accessible via its URL.
-	*
-	* When a trace is published, anyone with the trace link can view the full trace
-	* without needing to be logged in to Langfuse. This action cannot be undone
-	* programmatically - once any span in a trace is published, the entire trace
-	* becomes public.
-	*
-	* @returns The observation instance for method chaining
-	*
-	* @example
-	* ```typescript
-	* const span = startObservation('my-operation');
-	* span.setTraceAsPublic();
-	* ```
-	*/
-	setTraceAsPublic() {
-		this.otelSpan.setAttributes({ [LangfuseOtelSpanAttributes.TRACE_PUBLIC]: true });
-		return this;
-	}
-	startObservation(name, attributes, options) {
-		const { asType = "span" } = options || {};
-		return startObservation(name, attributes, {
-			asType,
-			parentSpanContext: this.otelSpan.spanContext()
-		});
-	}
-};
-var LangfuseSpan = class extends LangfuseBaseObservation {
-	constructor(params) {
-		super({
-			...params,
-			type: "span"
-		});
-	}
-	/**
-	* Updates this span with new attributes.
-	*
-	* @param attributes - Span attributes to set
-	* @returns This span for method chaining
-	*
-	* @example
-	* ```typescript
-	* span.update({
-	*   output: { result: 'success' },
-	*   level: 'DEFAULT',
-	*   metadata: { duration: 150 }
-	* });
-	* ```
-	*/
-	update(attributes) {
-		super.updateOtelSpanAttributes(attributes);
-		return this;
-	}
-};
-var LangfuseAgent = class extends LangfuseBaseObservation {
-	constructor(params) {
-		super({
-			...params,
-			type: "agent"
-		});
-	}
-	/**
-	* Updates this agent observation with new attributes.
-	*
-	* @param attributes - Agent attributes to set
-	* @returns This agent for method chaining
-	*
-	* @example
-	* ```typescript
-	* agent.update({
-	*   output: {
-	*     taskCompleted: true,
-	*     iterationsUsed: 5,
-	*     toolsInvoked: ['web-search', 'calculator', 'summarizer'],
-	*     finalResult: 'Research completed with high confidence'
-	*   },
-	*   metadata: {
-	*     efficiency: 0.85,
-	*     qualityScore: 0.92,
-	*     resourcesConsumed: { tokens: 15000, apiCalls: 12 }
-	*   }
-	* });
-	* ```
-	*/
-	update(attributes) {
-		super.updateOtelSpanAttributes(attributes);
-		return this;
-	}
-};
-var LangfuseTool = class extends LangfuseBaseObservation {
-	constructor(params) {
-		super({
-			...params,
-			type: "tool"
-		});
-	}
-	/**
-	* Updates this tool observation with new attributes.
-	*
-	* @param attributes - Tool attributes to set
-	* @returns This tool for method chaining
-	*
-	* @example
-	* ```typescript
-	* tool.update({
-	*   output: {
-	*     result: searchResults,
-	*     count: searchResults.length,
-	*     relevanceScore: 0.89,
-	*     executionTime: 1250
-	*   },
-	*   metadata: {
-	*     cacheHit: false,
-	*     apiCost: 0.025,
-	*     rateLimitRemaining: 950
-	*   }
-	* });
-	* ```
-	*/
-	update(attributes) {
-		super.updateOtelSpanAttributes(attributes);
-		return this;
-	}
-};
-var LangfuseChain = class extends LangfuseBaseObservation {
-	constructor(params) {
-		super({
-			...params,
-			type: "chain"
-		});
-	}
-	/**
-	* Updates this chain observation with new attributes.
-	*
-	* @param attributes - Chain attributes to set
-	* @returns This chain for method chaining
-	*
-	* @example
-	* ```typescript
-	* chain.update({
-	*   output: {
-	*     stepsCompleted: 5,
-	*     stepsSuccessful: 4,
-	*     finalResult: processedData,
-	*     pipelineEfficiency: 0.87
-	*   },
-	*   metadata: {
-	*     bottleneckStep: 'data-validation',
-	*     parallelizationOpportunities: ['step-2', 'step-3'],
-	*     optimizationSuggestions: ['cache-intermediate-results']
-	*   }
-	* });
-	* ```
-	*/
-	update(attributes) {
-		super.updateOtelSpanAttributes(attributes);
-		return this;
-	}
-};
-var LangfuseRetriever = class extends LangfuseBaseObservation {
-	constructor(params) {
-		super({
-			...params,
-			type: "retriever"
-		});
-	}
-	/**
-	* Updates this retriever observation with new attributes.
-	*
-	* @param attributes - Retriever attributes to set
-	* @returns This retriever for method chaining
-	*/
-	update(attributes) {
-		super.updateOtelSpanAttributes(attributes);
-		return this;
-	}
-};
-var LangfuseEvaluator = class extends LangfuseBaseObservation {
-	constructor(params) {
-		super({
-			...params,
-			type: "evaluator"
-		});
-	}
-	/**
-	* Updates this evaluator observation with new attributes.
-	*
-	* @param attributes - Evaluator attributes to set
-	* @returns This evaluator for method chaining
-	*/
-	update(attributes) {
-		super.updateOtelSpanAttributes(attributes);
-		return this;
-	}
-};
-var LangfuseGuardrail = class extends LangfuseBaseObservation {
-	constructor(params) {
-		super({
-			...params,
-			type: "guardrail"
-		});
-	}
-	/**
-	* Updates this guardrail observation with new attributes.
-	*
-	* @param attributes - Guardrail attributes to set
-	* @returns This guardrail for method chaining
-	*/
-	update(attributes) {
-		super.updateOtelSpanAttributes(attributes);
-		return this;
-	}
-};
-var LangfuseGeneration = class extends LangfuseBaseObservation {
-	constructor(params) {
-		super({
-			...params,
-			type: "generation"
-		});
-	}
-	update(attributes) {
-		this.updateOtelSpanAttributes(attributes);
-		return this;
-	}
-};
-var LangfuseEmbedding = class extends LangfuseBaseObservation {
-	constructor(params) {
-		super({
-			...params,
-			type: "embedding"
-		});
-	}
-	/**
-	* Updates this embedding observation with new attributes.
-	*
-	* @param attributes - Embedding attributes to set
-	* @returns This embedding for method chaining
-	*/
-	update(attributes) {
-		this.updateOtelSpanAttributes(attributes);
-		return this;
-	}
-};
-var LangfuseEvent = class extends LangfuseBaseObservation {
-	constructor(params) {
-		super({
-			...params,
-			type: "event"
-		});
-		this.otelSpan.end(params.timestamp);
-	}
-};
-function createOtelSpan(params) {
-	return getLangfuseTracer().startSpan(params.name, { startTime: params.startTime }, createParentContext(params.parentSpanContext));
-}
-function createParentContext(parentSpanContext) {
-	if (!parentSpanContext) return;
-	return trace.setSpanContext(context.active(), parentSpanContext);
-}
-function startObservation(name, attributes, options) {
-	var _a$3;
-	const { asType = "span", ...observationOptions } = options || {};
-	const otelSpan = createOtelSpan({
-		name,
-		...observationOptions
-	});
-	switch (asType) {
-		case "generation": return new LangfuseGeneration({
-			otelSpan,
-			attributes
-		});
-		case "embedding": return new LangfuseEmbedding({
-			otelSpan,
-			attributes
-		});
-		case "agent": return new LangfuseAgent({
-			otelSpan,
-			attributes
-		});
-		case "tool": return new LangfuseTool({
-			otelSpan,
-			attributes
-		});
-		case "chain": return new LangfuseChain({
-			otelSpan,
-			attributes
-		});
-		case "retriever": return new LangfuseRetriever({
-			otelSpan,
-			attributes
-		});
-		case "evaluator": return new LangfuseEvaluator({
-			otelSpan,
-			attributes
-		});
-		case "guardrail": return new LangfuseGuardrail({
-			otelSpan,
-			attributes
-		});
-		case "event": return new LangfuseEvent({
-			otelSpan,
-			attributes,
-			timestamp: (_a$3 = observationOptions == null ? void 0 : observationOptions.startTime) != null ? _a$3 : /* @__PURE__ */ new Date()
-		});
-		case "span":
-		default: return new LangfuseSpan({
-			otelSpan,
-			attributes
-		});
-	}
-}
-async function createTraceId(seed) {
-	if (seed) {
-		const data = new TextEncoder().encode(seed);
-		const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-		return uint8ArrayToHex(new Uint8Array(hashBuffer)).slice(0, 32);
-	}
-	return uint8ArrayToHex(crypto.getRandomValues(new Uint8Array(16)));
-}
-function uint8ArrayToHex(array$1) {
-	return Array.from(array$1).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 //#endregion
@@ -46626,6 +46631,16 @@ function extractMessageText(content) {
 		if (part.type === "input_text" || part.type === "output_text" || part.type === "text") return typeof part.text === "string" ? part.text : "";
 		return "";
 	}).filter(Boolean).join("\n");
+}
+function extractCompletedUserMessage(payload) {
+	const item = payload.item;
+	if (!item || typeof item !== "object") return "";
+	if (!("type" in item) || item.type !== "UserMessage") return "";
+	return extractMessageText(item.content);
+}
+function isInstructionWrapperMessage(text) {
+	const trimmed = text.trim();
+	return /<\/?(environment_context|user_instructions)\b/.test(trimmed) || /^# AGENTS\.md instructions for\b/.test(trimmed);
 }
 /** Extract reasoning text, skipping encrypted-only reasoning items. */
 function extractReasoning(item) {
@@ -46741,7 +46756,7 @@ function parseSession(lines) {
 					const s = ensureStep(ts);
 					if (text) s.text = s.text ? `${s.text}\n${text}` : text;
 				} else if (msg.role === "user" && text) {
-					if (!turn.userInputFallback && !/^<(environment_context|user_instructions)/.test(text.trim())) turn.userInputFallback = text;
+					if (!turn.userInputFallback && !isInstructionWrapperMessage(text)) turn.userInputFallback = text;
 				}
 			} else if (p.type === "function_call") {
 				const call = p;
@@ -46823,7 +46838,10 @@ function parseSession(lines) {
 				continue;
 			}
 			ensureTurn(ts);
-			if (et === "user_message" && typeof p.message === "string") {
+			if (et === "item_completed") {
+				const text = extractCompletedUserMessage(p);
+				if (text && !isInstructionWrapperMessage(text) && !turn.userInput) turn.userInput = text;
+			} else if (et === "user_message" && typeof p.message === "string") {
 				if (!turn.userInput) turn.userInput = p.message;
 			} else if (et === "agent_message" && typeof p.message === "string") turn.lastAgentMessage = p.message;
 			else if (et === "token_count") {
