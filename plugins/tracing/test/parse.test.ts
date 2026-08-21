@@ -301,3 +301,39 @@ describe("parseSession", () => {
     expect(tool.output).toBe("patched");
   });
 });
+
+describe("user prompt extraction", () => {
+  it("prefers the structured UserMessage over the injected context block", () => {
+    const { turns } = parseSession(loadFixture("rollout-agents-preamble-main.jsonl"));
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.userInput).toBe("sag mal hallo");
+    expect(turns[0]!.userInput).not.toContain("AGENTS.md instructions");
+  });
+
+  it("keeps a prompt that merely mentions the wrapper tags", () => {
+    // Only the structured item can rescue this prompt: the fallback rejects
+    // any text containing the wrapper elements.
+    const prompt = "why does <environment_context> appear in my traces?";
+    const lines = loadFixture("rollout-agents-preamble-main.jsonl").map((line) =>
+      JSON.stringify(line).includes("sag mal hallo")
+        ? (JSON.parse(JSON.stringify(line).replaceAll("sag mal hallo", prompt)) as RolloutLine)
+        : line,
+    );
+
+    expect(parseSession(lines).turns[0]!.userInput).toBe(prompt);
+  });
+
+  it("rejects an AGENTS.md-prefixed wrapper in the fallback path", () => {
+    // Older CLIs emit no structured user item; drop it from the fixture.
+    const lines = loadFixture("rollout-agents-preamble-main.jsonl").filter(
+      (line) =>
+        !(
+          line.type === "event_msg" && (line.payload as { type?: string }).type === "item_completed"
+        ),
+    );
+    const { turns } = parseSession(lines);
+
+    expect(turns[0]!.userInput).toBe("sag mal hallo");
+  });
+});

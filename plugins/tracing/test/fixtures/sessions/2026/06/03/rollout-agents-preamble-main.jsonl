@@ -1,0 +1,7 @@
+{"timestamp": "2026-06-03T10:00:00.000Z", "type": "session_meta", "payload": {"session_id": "sess-agents-preamble", "cwd": "/repo", "cli_version": "0.149.0", "model_provider": "openai"}}
+{"timestamp": "2026-06-03T10:00:01.000Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-1"}}
+{"timestamp": "2026-06-03T10:00:02.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\n# Projektregeln\n\n- Antworte knapp.\n- Aendere keine Dateien.\n\n</INSTRUCTIONS>\n<environment_context>\n  <cwd>/repo</cwd>\n  <shell>zsh</shell>\n</environment_context>"}]}}
+{"timestamp": "2026-06-03T10:00:03.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "sag mal hallo"}]}}
+{"timestamp": "2026-06-03T10:00:04.000Z", "type": "event_msg", "payload": {"type": "item_completed", "turn_id": "turn-1", "item": {"type": "UserMessage", "content": [{"type": "text", "text": "sag mal hallo"}]}}}
+{"timestamp": "2026-06-03T10:00:05.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hallo!"}]}}
+{"timestamp": "2026-06-03T10:00:06.000Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "turn-1", "last_agent_message": "Hallo!"}}
