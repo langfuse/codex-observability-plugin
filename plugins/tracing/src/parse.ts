@@ -203,11 +203,12 @@ export function parseSession(lines: RolloutLine[]): {
           const s = ensureStep(ts);
           if (text) s.text = s.text ? `${s.text}\n${text}` : text;
         } else if (msg.role === "user" && text) {
-          // Codex injects <environment_context>/<user_instructions> as user
-          // messages; keep only the first that does not look like wrapper XML.
+          // Codex concatenates injected context into user messages; the block
+          // may start with an AGENTS.md preamble, so match the elements anywhere.
           if (
             !turn!.userInputFallback &&
-            !/^<(environment_context|user_instructions)/.test(text.trim())
+            !/<\/?(environment_context|user_instructions)\b/.test(text) &&
+            !/^# AGENTS\.md instructions for\b/.test(text.trim())
           ) {
             turn!.userInputFallback = text;
           }
@@ -303,6 +304,11 @@ export function parseSession(lines: RolloutLine[]): {
 
       if (et === "user_message" && typeof p.message === "string") {
         if (!turn!.userInput) turn!.userInput = p.message;
+      } else if (et === "item_completed" && p.item?.type === "UserMessage") {
+        // The structured item carries the bare prompt; the `response_item`
+        // copy may be concatenated with injected context.
+        const text = extractMessageText(p.item.content);
+        if (text && !turn!.userInput) turn!.userInput = text;
       } else if (et === "agent_message" && typeof p.message === "string") {
         turn!.lastAgentMessage = p.message;
       } else if (et === "token_count") {

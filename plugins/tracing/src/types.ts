@@ -129,6 +129,8 @@ export type EventMsgPayload = {
     last_token_usage?: TokenUsage;
     model_context_window?: number;
   } | null;
+  /** item_completed */
+  item?: { type?: string; content?: MessageContentPart[] } | null;
   /** collab_agent_spawn_end */
   new_thread_id?: string | null;
   /** sub_agent_activity */
