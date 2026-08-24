@@ -34,7 +34,7 @@ function readPluginVersion(): string {
 function stageInstalledPlugin(codexHome: string): void {
   const installedBundle = path.join(
     codexHome,
-    "plugins/cache/codex-observability-plugin/tracing/0.1.0/dist/index.mjs",
+    `plugins/cache/codex-observability-plugin/tracing/${readPluginVersion()}/dist/index.mjs`,
   );
   fs.mkdirSync(path.dirname(installedBundle), { recursive: true });
   fs.copyFileSync(bundleFile, installedBundle);
