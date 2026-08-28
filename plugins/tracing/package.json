@@ -1,0 +1,37 @@
+{
+  "name": "@langfuse/codex-observability-plugin",
+  "version": "0.1.0",
+  "description": "Langfuse observability plugin for the OpenAI Codex coding agent for tracing prompts, agent turns, model generations, and tool calls.",
+  "license": "MIT",
+  "author": "Langfuse",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/langfuse/codex-observability-plugin.git",
+    "directory": "plugins/tracing"
+  },
+  "bugs": {
+    "url": "https://github.com/langfuse/codex-observability-plugin/issues"
+  },
+  "homepage": "https://github.com/langfuse/codex-observability-plugin#readme",
+  "keywords": [
+    "codex",
+    "codex-plugin",
+    "langfuse",
+    "openai",
+    "observability",
+    "tracing",
+    "opentelemetry"
+  ],
+  "files": [
+    ".codex-plugin",
+    "hooks",
+    "dist"
+  ],
+  "scripts": {
+    "prepack": "pnpm -w run build"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
