@@ -47,9 +47,12 @@ jobs:
           package-manager-cache: false
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Typecheck
-        run: pnpm run typecheck
+      - name: Lint
+        run: pnpm run lint
+      - name: Test
+        run: pnpm test
       - name: Stage npm package
+        working-directory: plugins/tracing
         run: |
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             pnpm exec npm stage publish --provenance --access public --tag next
