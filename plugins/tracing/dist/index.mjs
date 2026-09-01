@@ -45170,7 +45170,7 @@ var require_src$2 = /* @__PURE__ */ __commonJSMin(((exports) => {
 }));
 
 //#endregion
-//#region ../../node_modules/.pnpm/@langfuse+otel@5.4.1_@opentelemetry+api@1.9.1_@opentelemetry+core@2.7.1_@opentelemetry+api@1._ekes344w3htofsunm64fqkhuni/node_modules/@langfuse/otel/dist/index.mjs
+//#region ../../node_modules/.pnpm/@langfuse+otel@5.4.1_@opentelemetry+api@1.9.1_@opentelemetry+core@2.7.1_@opentelemetry+_e259bc6b5059078fd5966601016fecbc/node_modules/@langfuse/otel/dist/index.mjs
 var import_src$1 = require_src$9();
 var import_src$2 = require_src$4();
 var import_src$3 = require_src$2();
@@ -46727,7 +46727,9 @@ function parseSession(lines) {
 		}
 		if (line.type === "turn_context") {
 			const t = ensureTurn(ts);
-			t.model = line.payload.model ?? t.model;
+			const p = line.payload;
+			t.model = p.model ?? t.model;
+			t.reasoningEffort = typeof p.reasoning_effort === "string" ? p.reasoning_effort : typeof p.effort === "string" ? p.effort : t.reasoningEffort;
 			t.invocationParams = line.payload;
 			continue;
 		}
@@ -46829,6 +46831,7 @@ function parseSession(lines) {
 				const text = extractMessageText(p.item.content);
 				if (text && !turn.userInput) turn.userInput = text;
 			} else if (et === "agent_message" && typeof p.message === "string") turn.lastAgentMessage = p.message;
+			else if (et === "thread_settings_applied" && typeof p.thread_settings?.reasoning_effort === "string") turn.reasoningEffort = p.thread_settings.reasoning_effort;
 			else if (et === "token_count") {
 				if (p.info?.total_token_usage) turn.totalUsage = p.info.total_token_usage;
 				closeStep(ts, p.info?.last_token_usage ?? void 0);
@@ -47055,6 +47058,7 @@ async function emitTurn(turn, sessionMeta, ctx) {
 			"codex.turn_id": turn.turnId,
 			"codex.thread_id": sessionMeta.sessionId,
 			"codex.model": turn.model,
+			"codex.reasoning_effort": turn.reasoningEffort,
 			"codex.model_provider": sessionMeta.modelProvider,
 			"codex.cli_version": sessionMeta.cliVersion,
 			"codex.aborted": turn.aborted,
@@ -47072,8 +47076,12 @@ async function emitTurn(turn, sessionMeta, ctx) {
 			input: i === 0 ? turn.userInput != null ? clip(turn.userInput) : void 0 : previousToolResults,
 			output: buildGenerationOutput(step, clip),
 			model: turn.model,
+			modelParameters: turn.reasoningEffort ? { reasoning_effort: turn.reasoningEffort } : void 0,
 			usageDetails: toUsageDetails(step.usage),
-			metadata: { "codex.step_index": i }
+			metadata: {
+				"codex.step_index": i,
+				"codex.reasoning_effort": turn.reasoningEffort
+			}
 		}, {
 			asType: "generation",
 			startTime: new Date(step.startTime),

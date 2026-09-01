@@ -13,6 +13,7 @@ import type {
   TokenUsage,
   ToolCall,
   Turn,
+  TurnContextPayload,
 } from "./types.js";
 import { isPrimitive, toText } from "./utils.js";
 
@@ -183,8 +184,14 @@ export function parseSession(lines: RolloutLine[]): {
 
     if (line.type === "turn_context") {
       const t = ensureTurn(ts);
-      const p = line.payload as { model?: string };
+      const p = line.payload as TurnContextPayload;
       t.model = p.model ?? t.model;
+      t.reasoningEffort =
+        typeof p.reasoning_effort === "string"
+          ? p.reasoning_effort
+          : typeof p.effort === "string"
+            ? p.effort
+            : t.reasoningEffort;
       t.invocationParams = line.payload as Record<string, unknown>;
       continue;
     }
@@ -311,6 +318,11 @@ export function parseSession(lines: RolloutLine[]): {
         if (text && !turn!.userInput) turn!.userInput = text;
       } else if (et === "agent_message" && typeof p.message === "string") {
         turn!.lastAgentMessage = p.message;
+      } else if (
+        et === "thread_settings_applied" &&
+        typeof p.thread_settings?.reasoning_effort === "string"
+      ) {
+        turn!.reasoningEffort = p.thread_settings.reasoning_effort;
       } else if (et === "token_count") {
         if (p.info?.total_token_usage) turn!.totalUsage = p.info.total_token_usage;
         closeStep(ts, p.info?.last_token_usage ?? undefined);

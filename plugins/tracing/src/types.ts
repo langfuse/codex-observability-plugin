@@ -107,6 +107,8 @@ export type ResponseItem =
 
 export type TurnContextPayload = {
   model?: string;
+  effort?: string;
+  reasoning_effort?: string;
   [key: string]: unknown;
 };
 
@@ -123,6 +125,12 @@ export type EventMsgPayload = {
   type: string;
   turn_id?: string | null;
   call_id?: string;
+  /** thread_settings_applied */
+  thread_settings?: {
+    model?: string;
+    reasoning_effort?: string;
+    [key: string]: unknown;
+  } | null;
   /** token_count */
   info?: {
     total_token_usage?: TokenUsage;
@@ -210,6 +218,7 @@ export type Turn = {
   startTime: number;
   endTime: number;
   model?: string;
+  reasoningEffort?: string;
   invocationParams?: Record<string, unknown>;
   userInput?: string;
   finalOutput?: string;

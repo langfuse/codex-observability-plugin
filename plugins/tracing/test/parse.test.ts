@@ -36,6 +36,7 @@ describe("parseSession", () => {
     expect(turn.completed).toBe(true);
     expect(turn.aborted).toBe(false);
     expect(turn.model).toBe("gpt-5.4");
+    expect(turn.reasoningEffort).toBe("medium");
     expect(turn.userInput).toBe("List the files in the repo");
     expect(turn.finalOutput).toBe("There are two files: file1.txt and file2.txt.");
     expect(turn.totalUsage?.total_tokens).toBe(300);
@@ -77,6 +78,38 @@ describe("parseSession", () => {
     expect(failing?.error).toBe("command failed");
     expect(turn.startTime).toBe(Date.parse("2026-06-03T11:00:01.000Z"));
     expect(turn.endTime).toBe(Date.parse("2026-06-03T11:00:05.000Z"));
+  });
+
+  it("captures reasoning effort from applied thread settings", () => {
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-06-03T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:01.100Z",
+        type: "turn_context",
+        payload: { model: "gpt-5.6-luna", effort: "xhigh" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:01.200Z",
+        type: "event_msg",
+        payload: {
+          type: "thread_settings_applied",
+          thread_settings: { reasoning_effort: "max" },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t" },
+      },
+    ];
+
+    const { turns } = parseSession(lines);
+    expect(turns[0].reasoningEffort).toBe("max");
   });
 
   it("records subagent threads from sub_agent_activity, ignoring non-started kinds", () => {
