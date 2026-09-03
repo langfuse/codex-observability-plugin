@@ -320,6 +320,32 @@ function emitToolCall(
   tool.end(new Date(tc.endTime ?? fallbackEnd));
 }
 
+// Matches a skill's SKILL.md path anywhere inside tool-call arguments (shell
+// commands read skills as e.g. `cat ~/.codex/skills/<name>/SKILL.md`).
+const SKILL_MD_PATH_RE = /(?:^|[\s"'`=(/])skills\/([A-Za-z0-9_.-]+)\/SKILL\.md/g;
+
+/**
+ * Collect `skill:<name>` tags for every skill whose SKILL.md was read by a
+ * tool call in this turn. Mirrors the Claude Code plugin's skill tags so the
+ * two projects share the same tag semantics: `skill:` means "read in the
+ * top-level conversation". Subagent rollouts are intentionally out of scope
+ * (the Claude plugin keeps those in a separate `subagent-skill:` namespace;
+ * add the equivalent here if subagent skill reads become worth tracking).
+ */
+export function collectSkillTags(turn: Turn): string[] {
+  const tags: string[] = [];
+  for (const step of turn.steps) {
+    for (const call of step.toolCalls) {
+      const raw = typeof call.args === "string" ? call.args : toText(call.args ?? "");
+      for (const match of raw.matchAll(SKILL_MD_PATH_RE)) {
+        const tag = `skill:${match[1]}`;
+        if (!tags.includes(tag)) tags.push(tag);
+      }
+    }
+  }
+  return tags;
+}
+
 /**
  * Convert a Codex rollout file into Langfuse traces.
  *
@@ -358,12 +384,13 @@ export async function convertRollout(
     // skipped by dedup above) so the derived id is stable across hook runs.
     const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
 
+    const tags = [...(options.config.tags ?? []), ...collectSkillTags(turn)];
     await propagateAttributes(
       {
         sessionId: sessionMeta.sessionId,
         traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
         ...(options.config.user_id ? { userId: options.config.user_id } : {}),
-        ...(options.config.tags ? { tags: options.config.tags } : {}),
+        ...(tags.length ? { tags } : {}),
         ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
       },
       async () => {

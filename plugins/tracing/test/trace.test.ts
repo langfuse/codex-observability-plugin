@@ -13,7 +13,7 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { Config } from "../src/config.js";
-import { convertRollout } from "../src/trace.js";
+import { collectSkillTags, convertRollout } from "../src/trace.js";
 
 const exporter = new InMemorySpanExporter();
 let provider: NodeTracerProvider;
@@ -328,5 +328,52 @@ describe("deterministic trace ids (trace_seed)", () => {
     const roots = turnRoots();
     expect(roots).toHaveLength(1);
     expect(roots[0].spanContext().traceId).toBe(seededTraceId(`${seed}:2`));
+  });
+});
+
+describe("collectSkillTags", () => {
+  const makeTurn = (calls: unknown[]): Parameters<typeof collectSkillTags>[0] =>
+    ({
+      startTime: 0,
+      endTime: 1,
+      steps: [
+        {
+          startTime: 0,
+          endTime: 1,
+          toolCalls: calls.map((args, i) => ({
+            callId: `c${i}`,
+            name: "shell",
+            args,
+            startTime: 0,
+          })),
+        },
+      ],
+      subagentThreadIds: [],
+      completed: true,
+      aborted: false,
+    }) as Parameters<typeof collectSkillTags>[0];
+
+  it("tags a SKILL.md read from shell command args", () => {
+    const turn = makeTurn([
+      { command: ["bash", "-lc", "cat /Users/u/.codex/skills/goal-first/SKILL.md"] },
+    ]);
+    expect(collectSkillTags(turn)).toEqual(["skill:goal-first"]);
+  });
+
+  it("dedupes repeated reads and collects multiple skills", () => {
+    const turn = makeTurn([
+      { command: ["cat", "/home/u/dotfiles/codex/skills/goal-first/SKILL.md"] },
+      { command: ["sed", "-n", "1,40p", "skills/goal-first/SKILL.md"] },
+      { command: ["cat", "skills/structured-answer/SKILL.md"] },
+    ]);
+    expect(collectSkillTags(turn)).toEqual(["skill:goal-first", "skill:structured-answer"]);
+  });
+
+  it("ignores non-SKILL.md paths and unrelated commands", () => {
+    const turn = makeTurn([
+      { command: ["cat", "skills/goal-first/references/deep.md"] },
+      { command: ["ls", "src/"] },
+    ]);
+    expect(collectSkillTags(turn)).toEqual([]);
   });
 });
