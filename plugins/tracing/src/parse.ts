@@ -167,12 +167,17 @@ export function parseSession(lines: RolloutLine[]): {
         id?: string;
         cli_version?: string;
         model_provider?: string | null;
+        cwd?: string;
+        git?: { branch?: string | null; repository_url?: string | null } | null;
         base_instructions?: { text?: string } | null;
         parent_thread_id?: string | null;
         thread_source?: string | null;
       };
       sessionMeta = {
         sessionId: typeof p.id === "string" ? p.id : sessionMeta.sessionId,
+        cwd: p.cwd,
+        gitBranch: p.git?.branch ?? undefined,
+        gitRepository: p.git?.repository_url ?? undefined,
         cliVersion: p.cli_version,
         modelProvider: p.model_provider ?? undefined,
         baseInstructions: p.base_instructions?.text,

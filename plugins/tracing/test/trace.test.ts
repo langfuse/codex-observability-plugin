@@ -79,6 +79,9 @@ describe("convertRollout", () => {
     expect(parentId(root!)).toBeUndefined(); // top-level turn = its own trace
     expect(attr(root!, "langfuse.observation.input")).toContain("List the files");
     expect(attr(root!, "langfuse.observation.output")).toContain("two files");
+    expect(attr(root!, "langfuse.observation.metadata.project")).toBe("workspace");
+    expect(attr(root!, "langfuse.observation.metadata.cwd")).toBe("/repo/workspace");
+    expect(attr(root!, "langfuse.observation.metadata.git_branch")).toBe("feature/test");
 
     // Backdated to the turn's task_started timestamp.
     expect(startMs(root!)).toBe(Date.parse("2026-06-03T10:00:01.000Z"));
@@ -214,6 +217,35 @@ describe("convertRollout", () => {
     exporter.reset();
     await convertRollout(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
+  });
+
+  it("waits for an in-progress turn instead of uploading it twice", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+    const completed = fs.readFileSync(file, "utf-8");
+    fs.writeFileSync(file, completed.replace(/^.*"task_complete".*\n?$/m, ""));
+
+    await convertRollout(file, { config: baseConfig });
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+    expect(fs.existsSync(`${file}.langfuse`)).toBe(false);
+
+    fs.writeFileSync(file, completed);
+    await convertRollout(file, { config: baseConfig });
+    expect(exporter.getFinishedSpans().some((span) => span.name === "Codex Turn")).toBe(true);
+  });
+
+  it("serializes concurrent uploads of the same rollout", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+
+    await Promise.all([
+      convertRollout(file, { config: baseConfig }),
+      convertRollout(file, { config: baseConfig }),
+    ]);
+
+    expect(exporter.getFinishedSpans().filter((span) => span.name === "Codex Turn")).toHaveLength(
+      1,
+    );
   });
 });
 

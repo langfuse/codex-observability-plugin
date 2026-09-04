@@ -13,7 +13,7 @@ import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
 import { parseSession } from "./parse.js";
-import { loadUploadedTurnIds, markTurnUploaded } from "./sidecar.js";
+import { claimRolloutUpload, loadUploadedTurnIds, markTurnUploaded } from "./sidecar.js";
 import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
 import { debugLog, toText, truncate } from "./utils.js";
 
@@ -228,6 +228,10 @@ async function emitTurn(
       metadata: {
         "codex.turn_id": turn.turnId,
         "codex.thread_id": sessionMeta.sessionId,
+        project: sessionMeta.cwd ? path.basename(sessionMeta.cwd) : undefined,
+        cwd: sessionMeta.cwd,
+        git_branch: sessionMeta.gitBranch,
+        git_repository: sessionMeta.gitRepository,
         "codex.model": turn.model,
         "codex.model_provider": sessionMeta.modelProvider,
         "codex.cli_version": sessionMeta.cliVersion,
@@ -331,6 +335,22 @@ export async function convertRollout(
   rolloutFile: string,
   options: { config: Config; parentObservation?: LangfuseObservation },
 ): Promise<void> {
+  const releaseUpload = options.parentObservation
+    ? undefined
+    : await claimRolloutUpload(rolloutFile);
+  if (!options.parentObservation && !releaseUpload) return;
+
+  try {
+    await convertClaimedRollout(rolloutFile, options);
+  } finally {
+    await releaseUpload?.();
+  }
+}
+
+async function convertClaimedRollout(
+  rolloutFile: string,
+  options: { config: Config; parentObservation?: LangfuseObservation },
+): Promise<void> {
   const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
   debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 
@@ -350,7 +370,11 @@ export async function convertRollout(
 
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
-    if (turn.completed && turn.turnId && uploaded.has(turn.turnId)) {
+    if (!turn.completed) {
+      debugLog(`waiting for in-progress turn ${turn.turnId ?? turnIndex + 1} to complete`);
+      continue;
+    }
+    if (turn.turnId && uploaded.has(turn.turnId)) {
       continue; // already uploaded in a previous hook invocation
     }
 
@@ -375,15 +399,9 @@ export async function convertRollout(
       },
     );
 
-    // Only mark completed turns as uploaded; an in-progress trailing turn is
-    // re-uploaded (and finalized) on the next hook invocation.
-    if (turn.completed && turn.turnId) {
+    if (turn.turnId) {
       uploaded.add(turn.turnId);
       await markTurnUploaded(rolloutFile, turn.turnId);
-    } else if (turn.turnId) {
-      debugLog(
-        `uploaded in-progress turn ${turn.turnId}; waiting for completion before sidecar mark`,
-      );
     }
   }
 }

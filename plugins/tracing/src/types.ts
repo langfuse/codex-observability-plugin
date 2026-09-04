@@ -170,6 +170,9 @@ export type HookInput = {
 /** Resolved session-level metadata. */
 export type SessionMeta = {
   sessionId: string;
+  cwd?: string;
+  gitBranch?: string;
+  gitRepository?: string;
   cliVersion?: string;
   modelProvider?: string;
   baseInstructions?: string;
