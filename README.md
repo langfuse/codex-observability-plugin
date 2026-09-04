@@ -19,6 +19,7 @@ Interrupted turns (where you cancel mid-response) are still uploaded and flagged
 ## Prerequisites
 
 - Node.js >= 22
+- The `npm` CLI on your `PATH`. Codex installs this plugin from the npm registry and shells out to `npm pack` to fetch it.
 - Codex >= 0.128
 - A [Langfuse Cloud](https://cloud.langfuse.com) account (or a [self-hosted](https://langfuse.com/self-hosting) instance) and API keys
 
@@ -86,6 +87,17 @@ Config is resolved as **defaults → `~/.codex/langfuse.json` → `<project>/.co
 4. Copy the **public** key (`pk-lf-...`) and **secret** key (`sk-lf-...`).
 
 Run a Codex turn, then open your Langfuse project to see the trace.
+
+## Updating
+
+Codex refreshes configured marketplaces in the background when a session starts, so updates usually arrive on their own with the next restart. To pull one immediately:
+
+```bash
+codex plugin marketplace upgrade codex-observability-plugin
+codex plugin list
+```
+
+`codex plugin list` shows the installed version. If a release changes the `Stop` hook command, Codex shows **Hooks need review** and the hook has to be trusted again in `/hooks` before traces resume.
 
 ## Environment variables
 
@@ -199,12 +211,24 @@ The hook fails open: any tracing error is logged and swallowed so it never block
 
 ```bash
 pnpm install
-pnpm test        # run the test suite
-pnpm run lint    # prettier + tsc + verify the committed bundle is current
+pnpm test        # build, then run the test suite
+pnpm run lint    # prettier + tsc + build
 pnpm run build   # bundle the hook to plugins/tracing/dist/index.mjs
 ```
 
-The hook ships as a single self-contained `plugins/tracing/dist/index.mjs` (no install step runs when Codex loads the plugin), so the bundle is committed to the repo. After changing anything under `src/`, run `pnpm run build` and commit the updated bundle — CI enforces this via `pnpm run lint`.
+The hook ships as a single self-contained `plugins/tracing/dist/index.mjs`, because Codex runs the plugin without an install step and never installs its dependencies. The bundle is a build output and is not committed: `prepack` builds it when the npm package is published, so it travels in the tarball instead of in Git. `pnpm test` builds first, since the hook-command test executes the bundled hook.
+
+### Releasing
+
+Releases go through the tag-triggered workflow, never through a manual `npm publish`. Bump the version in **both** `plugins/tracing/package.json` and `plugins/tracing/.codex-plugin/plugin.json`, then push a matching tag:
+
+```bash
+git tag v0.4.0 && git push origin v0.4.0
+```
+
+The workflow refuses a tag whose name disagrees with either version, then lints, tests, and stages the package on npm with provenance. A maintainer approves the staged publish with 2FA (`npm stage approve <id>`), and the draft GitHub release still has to be published. Finally, point `.agents/plugins/marketplace.json` at the new version, because that pin is what users install.
+
+The two versions matter for different things: the one in `package.json` is the npm version, and the one in `plugin.json` decides the cache directory Codex installs into (`~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/`) and therefore whether Codex refreshes an existing install at all. Publishing them out of step ships a package that reports the wrong version.
 
 ## License
 
