@@ -8,5 +8,5 @@ node_modules/
 # Local debugging
 debug.log
 
-# Note: plugins/tracing/dist/ is intentionally committed — Codex runs the
-# bundled hook directly without an install/build step.
+# Build output
+plugins/tracing/dist/
