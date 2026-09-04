@@ -1,0 +1,65 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Stage npm package and create GitHub release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate release version
+        run: |
+          package_version="$(node -p "require('./plugins/tracing/package.json').version")"
+          manifest_version="$(node -p "require('./plugins/tracing/.codex-plugin/plugin.json').version")"
+          if [[ "$GITHUB_REF_NAME" != "v$package_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $package_version" >&2
+            exit 1
+          fi
+          if [[ "$manifest_version" != "$package_version" ]]; then
+            echo "plugin.json version $manifest_version does not match package.json version $package_version" >&2
+            exit 1
+          fi
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm run lint
+      - name: Test
+        run: pnpm test
+      - name: Stage npm package
+        working-directory: plugins/tracing
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            pnpm exec npm stage publish --provenance --access public --tag next
+          else
+            pnpm exec npm stage publish --provenance --access public
+          fi
+      - name: Create draft GitHub release
+        run: gh release create "$GITHUB_REF_NAME" --draft --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
