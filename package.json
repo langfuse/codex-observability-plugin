@@ -43,7 +43,7 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^26.4.0",
     "npm": "11.15.0",
     "prettier": "^3.9.4",
     "tsdown": "^0.18.0",
