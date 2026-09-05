@@ -13,6 +13,7 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { Config } from "../src/config.js";
+import { markTurnUploaded } from "../src/sidecar.js";
 import { convertRollout } from "../src/trace.js";
 
 const exporter = new InMemorySpanExporter();
@@ -48,6 +49,7 @@ const attr = (span: ReadableSpan, key: string): string =>
   span.attributes[key] == null ? "" : String(span.attributes[key]);
 const obsType = (span: ReadableSpan): string => attr(span, "langfuse.observation.type");
 const startMs = (span: ReadableSpan): number => span.startTime[0] * 1000 + span.startTime[1] / 1e6;
+const endMs = (span: ReadableSpan): number => span.endTime[0] * 1000 + span.endTime[1] / 1e6;
 const parentId = (span: ReadableSpan): string | undefined =>
   (span as unknown as { parentSpanContext?: { spanId?: string } }).parentSpanContext?.spanId ??
   (span as unknown as { parentSpanId?: string }).parentSpanId;
@@ -68,6 +70,56 @@ beforeEach(() => {
 });
 
 describe("convertRollout", () => {
+  it("does not emit an incomplete top-level turn", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+    const lines = fs.readFileSync(file, "utf-8").trimEnd().split("\n");
+    fs.writeFileSync(file, `${lines.slice(0, -1).join("\n")}\n`);
+
+    await convertRollout(file, { config: baseConfig });
+
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+    expect(fs.existsSync(`${file}.langfuse`)).toBe(false);
+  });
+
+  it("finalizes the incomplete turn identified by the Stop hook", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+    const lines = fs.readFileSync(file, "utf-8").trimEnd().split("\n");
+    const preTerminalLines = lines.slice(0, -1);
+    const lastPersisted = JSON.parse(preTerminalLines.at(-1)!) as { timestamp: string };
+    fs.writeFileSync(file, `${preTerminalLines.join("\n")}\n`);
+
+    const uploadedTurnIds = await convertRollout(file, {
+      config: baseConfig,
+      finalizeTurnId: "turn-1",
+    });
+
+    const roots = exporter.getFinishedSpans().filter((span) => span.name === "Codex Turn");
+    expect(roots).toHaveLength(1);
+    expect(attr(roots[0], "langfuse.observation.metadata.codex.turn_id")).toBe("turn-1");
+    expect(attr(roots[0], "langfuse.observation.metadata.codex.thread_id")).toBe("sess-basic");
+    expect(attr(roots[0], "langfuse.observation.output")).toContain("two files");
+    expect(endMs(roots[0])).toBe(Date.parse(lastPersisted.timestamp));
+    expect(uploadedTurnIds).toEqual(["turn-1"]);
+    expect(fs.existsSync(`${file}.langfuse`)).toBe(false);
+  });
+
+  it("does not finalize an incomplete turn that differs from the Stop payload", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+    const lines = fs.readFileSync(file, "utf-8").trimEnd().split("\n");
+    fs.writeFileSync(file, `${lines.slice(0, -1).join("\n")}\n`);
+
+    const uploadedTurnIds = await convertRollout(file, {
+      config: baseConfig,
+      finalizeTurnId: "turn-other",
+    });
+
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+    expect(uploadedTurnIds).toEqual([]);
+  });
+
   it("emits an agent → generation → tool tree with backdated timestamps", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), { config: baseConfig });
@@ -150,6 +202,8 @@ describe("convertRollout", () => {
 
     // Aborted turn is flagged on the parent root.
     expect(attr(parent!, "langfuse.observation.level")).toBe("WARNING");
+    expect(attr(parent!, "langfuse.observation.metadata.codex.aborted")).toBe("true");
+    expect(attr(parent!, "langfuse.observation.status_message")).toBe("Turn interrupted by user");
 
     // The failing exec is recorded as an ERROR-level tool span.
     const failedTool = spans.find(
@@ -157,6 +211,20 @@ describe("convertRollout", () => {
     );
     expect(failedTool, "expected a failed tool span").toBeDefined();
     expect(attr(failedTool!, "langfuse.observation.status_message")).toContain("command failed");
+  });
+
+  it("does not emit an incomplete subagent turn", async () => {
+    const dir = stageFixtures();
+    const childFile = path.join(dir, "rollout-child-thread-child.jsonl");
+    const childLines = fs.readFileSync(childFile, "utf-8").trimEnd().split("\n");
+    fs.writeFileSync(childFile, `${childLines.slice(0, -1).join("\n")}\n`);
+
+    await convertRollout(path.join(dir, "rollout-parent.jsonl"), { config: baseConfig });
+
+    const childTurns = exporter
+      .getFinishedSpans()
+      .filter((span) => span.name === "Codex Subagent Turn" && obsType(span) === "agent");
+    expect(childTurns).toHaveLength(0);
   });
 
   it("nests subagent turns discovered via sub_agent_activity events", async () => {
@@ -206,9 +274,10 @@ describe("convertRollout", () => {
     const dir = stageFixtures();
     const file = path.join(dir, "rollout-basic-main.jsonl");
 
-    await convertRollout(file, { config: baseConfig });
+    const uploadedTurnIds = await convertRollout(file, { config: baseConfig });
     const firstCount = exporter.getFinishedSpans().length;
     expect(firstCount).toBeGreaterThan(0);
+    for (const turnId of uploadedTurnIds) await markTurnUploaded(file, turnId);
     expect(fs.existsSync(`${file}.langfuse`)).toBe(true);
 
     exporter.reset();
@@ -308,8 +377,9 @@ describe("deterministic trace ids (trace_seed)", () => {
     const dir = stageFixtures();
     const file = path.join(dir, "rollout-two-turns-main.jsonl");
 
-    await convertRollout(file, { config: seededConfig });
+    const uploadedTurnIds = await convertRollout(file, { config: seededConfig });
     expect(turnRoots()).toHaveLength(2);
+    for (const turnId of uploadedTurnIds) await markTurnUploaded(file, turnId);
     expect(fs.existsSync(`${file}.langfuse`)).toBe(true);
 
     exporter.reset();
