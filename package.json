@@ -25,6 +25,7 @@
   "scripts": {
     "build": "tsdown --config plugins/tracing/tsdown.config.ts",
     "test": "pnpm run build && vitest run",
+    "test:e2e": "pnpm run build && vitest run --config vitest.e2e.config.ts",
     "test:watch": "pnpm run build && vitest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -32,6 +33,7 @@
     "lint": "pnpm run format:check && pnpm run lint:tsc && pnpm run build"
   },
   "dependencies": {
+    "@langfuse/core": "^5.4.1",
     "@langfuse/otel": "^5.4.1",
     "@langfuse/tracing": "^5.4.1",
     "@opentelemetry/api": "^1.9.0",

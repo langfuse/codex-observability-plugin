@@ -1,5 +1,6 @@
 import { getConfig } from "./config.js";
 import { setupInstrumentation } from "./instrumentation.js";
+import { readExternalParentSpanContext } from "./parent-context.js";
 import { convertRollout } from "./trace.js";
 import type { HookInput } from "./types.js";
 import { debugLog, readStdin, setDebug } from "./utils.js";
@@ -44,9 +45,12 @@ export async function runHook(): Promise<void> {
     return;
   }
 
-  const instrumentation = setupInstrumentation(config);
+  const parentSpanContext = readExternalParentSpanContext(process.env, config.fail_on_error);
+  const instrumentation = setupInstrumentation(config, {
+    attached: parentSpanContext != null,
+  });
   try {
-    await convertRollout(hookInput.transcript_path, { config });
+    await convertRollout(hookInput.transcript_path, { config, parentSpanContext });
   } catch (error) {
     debugLog("failed to convert rollout:", error);
     if (config.fail_on_error) throw error;

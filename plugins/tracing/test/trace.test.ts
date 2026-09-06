@@ -4,19 +4,28 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { LangfuseSpanProcessor } from "@langfuse/otel";
+import { context, trace, TraceFlags, type SpanContext } from "@opentelemetry/api";
 import {
+  AlwaysOnSampler,
   InMemorySpanExporter,
+  ParentBasedSampler,
   type ReadableSpan,
-  SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished } from "vitest";
 
 import type { Config } from "../src/config.js";
-import { convertRollout } from "../src/trace.js";
+import { convertRollout as convert } from "../src/trace.js";
 
 const exporter = new InMemorySpanExporter();
+const processor = new LangfuseSpanProcessor({ exporter, shouldExportSpan: () => true });
 let provider: NodeTracerProvider;
+
+async function convertRollout(...args: Parameters<typeof convert>): Promise<void> {
+  await convert(...args);
+  await processor.forceFlush();
+}
 
 const baseConfig: Config = {
   enabled: true,
@@ -26,13 +35,24 @@ const baseConfig: Config = {
   max_chars: 20_000,
   debug: false,
   fail_on_error: false,
+  user_id: "codex-user",
+  tags: ["codex-tag"],
+  metadata: { owner: "codex" },
 };
 
 const fixturesRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/sessions");
 
+const externalParent: SpanContext = {
+  traceId: "0af7651916cd43dd8448eb211c80319c",
+  spanId: "b7ad6b7169203331",
+  traceFlags: TraceFlags.SAMPLED,
+  isRemote: true,
+};
+
 /** Copy the fixture session tree to a fresh temp dir (isolates sidecar writes). */
 function stageFixtures(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-trace-"));
+  onTestFinished(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.cpSync(fixturesRoot, path.join(dir, "sessions"), { recursive: true });
   return path.join(dir, "sessions", "2026", "06", "03");
 }
@@ -52,15 +72,30 @@ const parentId = (span: ReadableSpan): string | undefined =>
   (span as unknown as { parentSpanContext?: { spanId?: string } }).parentSpanContext?.spanId ??
   (span as unknown as { parentSpanId?: string }).parentSpanId;
 
+function expectStandaloneOwnership(spans: ReadableSpan[]): void {
+  const roots = spans.filter((span) => span.attributes["langfuse.internal.is_app_root"] === true);
+  expect(roots.map((span) => span.name)).toEqual(["Codex Turn"]);
+  expect(roots[0].attributes).toMatchObject({
+    "langfuse.trace.name": "Codex Turn",
+    "langfuse.trace.metadata.owner": "codex",
+    "user.id": "codex-user",
+    "session.id": "sess-basic",
+    "langfuse.trace.tags": ["codex-tag"],
+  });
+}
+
 beforeAll(() => {
   provider = new NodeTracerProvider({
-    spanProcessors: [new SimpleSpanProcessor(exporter)],
+    spanProcessors: [processor],
+    sampler: new ParentBasedSampler({ root: new AlwaysOnSampler() }),
   });
   provider.register();
 });
 
 afterAll(async () => {
   await provider.shutdown();
+  context.disable();
+  trace.disable();
 });
 
 beforeEach(() => {
@@ -79,6 +114,7 @@ describe("convertRollout", () => {
     expect(parentId(root!)).toBeUndefined(); // top-level turn = its own trace
     expect(attr(root!, "langfuse.observation.input")).toContain("List the files");
     expect(attr(root!, "langfuse.observation.output")).toContain("two files");
+    expectStandaloneOwnership(spans);
 
     // Backdated to the turn's task_started timestamp.
     expect(startMs(root!)).toBe(Date.parse("2026-06-03T10:00:01.000Z"));
@@ -217,6 +253,66 @@ describe("convertRollout", () => {
   });
 });
 
+describe("external parent context", () => {
+  it.each([
+    ["rollout-basic-main.jsonl", 1, 0, 4],
+    ["rollout-two-turns-main.jsonl", 2, 0, 4],
+    ["rollout-parent.jsonl", 1, 1, 6],
+  ])(
+    "attaches %s without taking trace ownership or using trace_seed",
+    async (file, turns, subagents, totalSpans) => {
+      const previousContext = context.active();
+      await convertRollout(path.join(stageFixtures(), file), {
+        config: { ...baseConfig, trace_seed: "unused-seed" },
+        parentSpanContext: externalParent,
+      });
+
+      const spans = exporter.getFinishedSpans();
+      expect(spans).toHaveLength(totalSpans);
+      const roots = spans.filter((span) => span.name === "Codex Turn");
+      expect(roots).toHaveLength(turns);
+      expect(spans.filter((span) => span.name === "Codex Subagent Turn")).toHaveLength(subagents);
+      for (const span of spans) {
+        expect(span.spanContext().traceId).toBe(externalParent.traceId);
+        expect(span.attributes["langfuse.internal.is_app_root"]).not.toBe(true);
+        expect(span.attributes["user.id"]).toBeUndefined();
+        expect(span.attributes["session.id"]).toBeUndefined();
+        expect(
+          Object.keys(span.attributes).filter((key) => key.startsWith("langfuse.trace.")),
+        ).toEqual([]);
+        if (span.name === "Codex Turn") {
+          expect(parentId(span)).toBe(externalParent.spanId);
+          expect(span.attributes["langfuse.observation.metadata.codex.turn_id"]).toBeDefined();
+        } else {
+          const parent = spans.find(
+            (candidate) => candidate.spanContext().spanId === parentId(span),
+          );
+          expect(parent).toBeDefined();
+          if (span.name === "Codex Subagent Turn") {
+            expect(parent!.name).toBe("Codex Turn");
+          } else {
+            expect(obsType(parent!)).toBe(obsType(span) === "tool" ? "generation" : "agent");
+          }
+        }
+      }
+      expect(context.active()).toBe(previousContext);
+    },
+  );
+
+  it("exports no spans for an unsampled parent but still records completed turns", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+
+    await convertRollout(file, {
+      config: baseConfig,
+      parentSpanContext: { ...externalParent, traceFlags: TraceFlags.NONE },
+    });
+
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+    expect(fs.readFileSync(`${file}.langfuse`, "utf-8")).toBe("turn-1\n");
+  });
+});
+
 describe("deterministic trace ids (trace_seed)", () => {
   const seed = "ci-run-42";
   const seededConfig: Config = { ...baseConfig, trace_seed: seed };
@@ -258,6 +354,7 @@ describe("deterministic trace ids (trace_seed)", () => {
     // Structure is unchanged: root agent span with its generations beneath it.
     const root = spans.find((s) => s.name === "Codex Turn")!;
     expect(obsType(root)).toBe("agent");
+    expectStandaloneOwnership(spans);
     const generations = spans.filter((s) => obsType(s) === "generation");
     expect(generations).toHaveLength(2);
     for (const gen of generations) {

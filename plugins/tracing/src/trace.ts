@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
+import { setLangfuseTraceIdInBaggage } from "@langfuse/core";
 import {
   createTraceId,
   propagateAttributes,
@@ -9,7 +10,7 @@ import {
   type LangfuseGenerationAttributes,
   type LangfuseObservation,
 } from "@langfuse/tracing";
-import { TraceFlags, type SpanContext } from "@opentelemetry/api";
+import { context, TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
 import { parseSession } from "./parse.js";
@@ -208,8 +209,8 @@ async function emitTurn(
     config: Config;
     rolloutFile: string;
     parentObservation?: LangfuseObservation;
-    /** Pre-derived trace id for top-level turns (see seededTraceParent). */
-    seededParent?: SpanContext;
+    /** External or seed-derived parent context for top-level turns. */
+    parentSpanContext?: SpanContext;
   },
 ): Promise<void> {
   const clip = makeClip(ctx.config.max_chars);
@@ -238,7 +239,7 @@ async function emitTurn(
     {
       asType: "agent",
       startTime: new Date(turn.startTime),
-      parentSpanContext: ctx.parentObservation?.otelSpan.spanContext() ?? ctx.seededParent,
+      parentSpanContext: ctx.parentObservation?.otelSpan.spanContext() ?? ctx.parentSpanContext,
     },
   );
 
@@ -329,7 +330,12 @@ function emitToolCall(
  */
 export async function convertRollout(
   rolloutFile: string,
-  options: { config: Config; parentObservation?: LangfuseObservation },
+  options: {
+    config: Config;
+    parentObservation?: LangfuseObservation;
+    /** Process-level parent owned by the application that launched Codex. */
+    parentSpanContext?: SpanContext;
+  },
 ): Promise<void> {
   const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
   debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
@@ -356,24 +362,37 @@ export async function convertRollout(
 
     // Turn numbering stays 1-based over the full rollout (including turns
     // skipped by dedup above) so the derived id is stable across hook runs.
-    const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
+    const parentSpanContext =
+      options.parentSpanContext ??
+      (await seededTraceParent(options.config, sessionMeta, turnIndex + 1));
+    const emit = () =>
+      emitTurn(turn, sessionMeta, {
+        config: options.config,
+        rolloutFile,
+        parentSpanContext,
+      });
 
-    await propagateAttributes(
-      {
-        sessionId: sessionMeta.sessionId,
-        traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
-        ...(options.config.user_id ? { userId: options.config.user_id } : {}),
-        ...(options.config.tags ? { tags: options.config.tags } : {}),
-        ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
-      },
-      async () => {
-        await emitTurn(turn, sessionMeta, {
-          config: options.config,
-          rolloutFile,
-          seededParent,
-        });
-      },
-    );
+    if (options.parentSpanContext) {
+      // The external application owns trace-level name, session, user, tags,
+      // and metadata. Codex observation metadata is still emitted by emitTurn.
+      // Carry its Langfuse claim so the SDK does not mark Codex as another app root.
+      const parentContext = setLangfuseTraceIdInBaggage(
+        context.active(),
+        options.parentSpanContext.traceId,
+      );
+      await context.with(parentContext, emit);
+    } else {
+      await propagateAttributes(
+        {
+          sessionId: sessionMeta.sessionId,
+          traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
+          ...(options.config.user_id ? { userId: options.config.user_id } : {}),
+          ...(options.config.tags ? { tags: options.config.tags } : {}),
+          ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
+        },
+        emit,
+      );
+    }
 
     // Only mark completed turns as uploaded; an in-progress trailing turn is
     // re-uploaded (and finalized) on the next hook invocation.

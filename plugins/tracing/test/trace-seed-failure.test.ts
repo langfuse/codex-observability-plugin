@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { TraceFlags } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -76,5 +77,25 @@ describe("trace seed derivation failure", () => {
         config: { ...baseConfig, fail_on_error: true },
       }),
     ).rejects.toThrow("derivation boom");
+  });
+
+  it("does not derive a seeded id when an external parent is present", async () => {
+    const dir = stageFixtures();
+    const traceId = "0af7651916cd43dd8448eb211c80319c";
+
+    await expect(
+      convertRollout(path.join(dir, "rollout-basic-main.jsonl"), {
+        config: { ...baseConfig, fail_on_error: true },
+        parentSpanContext: {
+          traceId,
+          spanId: "b7ad6b7169203331",
+          traceFlags: TraceFlags.SAMPLED,
+          isRemote: true,
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    const root = exporter.getFinishedSpans().find((span) => span.name === "Codex Turn");
+    expect(root?.spanContext().traceId).toBe(traceId);
   });
 });

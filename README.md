@@ -8,11 +8,11 @@ Once enabled, every Codex turn shows up in Langfuse as a trace you can inspect, 
 
 After each Codex turn, the plugin reads the session's rollout transcript and uploads it to Langfuse as a [trace](https://langfuse.com/docs/observability/data-model). The structure mirrors how Codex actually works:
 
-- **Turn** (`Codex Turn`, an [agent observation](https://langfuse.com/docs/observability/features/observation-types)) — one trace per turn, from your prompt to the final answer.
+- **Turn** (`Codex Turn`, an [agent observation](https://langfuse.com/docs/observability/features/observation-types)) — one trace per turn by default, or a child of an existing application span in [attached mode](#attach-to-an-existing-trace), from your prompt to the final answer.
 - **Generations** — one per model response within the turn, named `LLM` (or `LLM Subagent` inside subagent threads), with the model recorded on the observation plus reasoning, assistant text, the tool calls it requested, and token usage.
 - **Tool calls** — shell commands, `apply_patch`, `spawn_agent`, MCP tools, web searches, etc., each with its input, output, and error status. MCP calls are named `server.tool`, and failed commands are flagged as errors.
 - **Subagents** — subagent threads are resolved from their own rollout files and nested under the spawning turn as `Codex Subagent Turn`.
-- **Sessions** — all turns from one Codex session are grouped via the Codex thread id, so you can replay the whole session in Langfuse's [Sessions](https://langfuse.com/docs/observability/features/sessions) view.
+- **Sessions** — in standalone mode, all turns from one Codex session are grouped via the Codex thread id, so you can replay the whole session in Langfuse's [Sessions](https://langfuse.com/docs/observability/features/sessions) view.
 
 Interrupted turns (where you cancel mid-response) are still uploaded and flagged as interrupted.
 
@@ -101,20 +101,21 @@ codex plugin list
 
 ## Environment variables
 
-| Variable                                                      | Required | Default                      | Description                                                          |
-| ------------------------------------------------------------- | -------- | ---------------------------- | -------------------------------------------------------------------- |
-| `TRACE_TO_LANGFUSE`                                           | Yes      | `false`                      | Set to `"true"` to enable tracing                                    |
-| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_CODEX_PUBLIC_KEY`           | Yes      | —                            | Langfuse public key (`pk-lf-...`)                                    |
-| `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`           | Yes      | —                            | Langfuse secret key (`sk-lf-...`)                                    |
-| `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`               | No       | `https://cloud.langfuse.com` | Langfuse host / data region                                          |
-| `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT` | No       | —                            | Environment label for the traces (e.g. `production`)                 |
-| `LANGFUSE_CODEX_USER_ID`                                      | No       | Codex auth email, if found   | Attach a user id to all traces                                       |
-| `LANGFUSE_CODEX_TAGS`                                         | No       | —                            | Tags for all traces (JSON array or comma-separated)                  |
-| `LANGFUSE_CODEX_METADATA`                                     | No       | —                            | JSON object of metadata to attach to all traces                      |
-| `LANGFUSE_CODEX_TRACE_SEED`                                   | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids)) |
-| `LANGFUSE_CODEX_MAX_CHARS`                                    | No       | `20000`                      | Truncate inputs/outputs longer than this many characters             |
-| `LANGFUSE_CODEX_DEBUG`                                        | No       | `false`                      | Set to `"true"` for verbose logging to stderr                        |
-| `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | No       | `false`                      | Set to `"true"` to make hook upload errors fail the hook             |
+| Variable                                                      | Required | Default                      | Description                                                                           |
+| ------------------------------------------------------------- | -------- | ---------------------------- | ------------------------------------------------------------------------------------- |
+| `TRACE_TO_LANGFUSE`                                           | Yes      | `false`                      | Set to `"true"` to enable tracing                                                     |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_CODEX_PUBLIC_KEY`           | Yes      | —                            | Langfuse public key (`pk-lf-...`)                                                     |
+| `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`           | Yes      | —                            | Langfuse secret key (`sk-lf-...`)                                                     |
+| `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`               | No       | `https://cloud.langfuse.com` | Langfuse host / data region                                                           |
+| `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT` | No       | —                            | Environment label for the traces (e.g. `production`)                                  |
+| `LANGFUSE_CODEX_USER_ID`                                      | No       | Codex auth email, if found   | Attach a user id to all traces                                                        |
+| `LANGFUSE_CODEX_TAGS`                                         | No       | —                            | Tags for all traces (JSON array or comma-separated)                                   |
+| `LANGFUSE_CODEX_METADATA`                                     | No       | —                            | JSON object of metadata to attach to all traces                                       |
+| `LANGFUSE_CODEX_TRACEPARENT`                                  | No       | —                            | Attach turns beneath an existing W3C parent ([details](#attach-to-an-existing-trace)) |
+| `LANGFUSE_CODEX_TRACE_SEED`                                   | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids))                  |
+| `LANGFUSE_CODEX_MAX_CHARS`                                    | No       | `20000`                      | Truncate inputs/outputs longer than this many characters                              |
+| `LANGFUSE_CODEX_DEBUG`                                        | No       | `false`                      | Set to `"true"` for verbose logging to stderr                                         |
+| `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | No       | `false`                      | Set to `"true"` to make hook upload errors fail the hook                              |
 
 ### Data regions
 
@@ -124,6 +125,36 @@ codex plugin list
 | 🇺🇸 US    | `https://us.cloud.langfuse.com`    |
 | 🇯🇵 Japan | `https://jp.cloud.langfuse.com`    |
 | ⚕️ HIPAA | `https://hipaa.cloud.langfuse.com` |
+
+## Attach to an existing trace
+
+If another application launches a dedicated Codex process as part of an existing agent run, pass that run's [W3C Trace Context](https://www.w3.org/TR/trace-context/) in `LANGFUSE_CODEX_TRACEPARENT`:
+
+```bash
+TRACE_ID="0af7651916cd43dd8448eb211c80319c"
+AGENT_RUN_SPAN_ID="b7ad6b7169203331"
+
+LANGFUSE_CODEX_TRACEPARENT="00-${TRACE_ID}-${AGENT_RUN_SPAN_ID}-01" \
+  codex exec "your prompt"
+```
+
+The plugin then preserves its detailed observation tree while attaching it to the real application span:
+
+```text
+Master Agent Run
+`-- Codex Turn
+    |-- LLM
+    |   `-- exec_command
+    `-- Codex Subagent Turn
+```
+
+Use this mode only when one Master Agent Run owns one Codex/App Server process. The environment variable is process-scoped, so every top-level Codex turn in that process is attached directly to the same parent span. A long-lived App Server shared by unrelated runs requires request-level context propagation, which Codex Stop hooks do not currently expose.
+
+`LANGFUSE_CODEX_TRACEPARENT` is intentionally runtime-only: set it on the child Codex process, not in `langfuse.json` or a persistent shell profile. The plugin does not read the unscoped `TRACEPARENT` variable or `tracestate`. If both `LANGFUSE_CODEX_TRACEPARENT` and `LANGFUSE_CODEX_TRACE_SEED` are set, the explicit parent takes precedence.
+
+The Master application and this plugin must export to the same Langfuse project for the observations to appear in one trace. In attached mode, the Master application owns trace-level name, session, user, tags, and metadata; the plugin still records all Codex observation metadata, inputs, outputs, reasoning, usage, and errors.
+
+The final trace flags are honored. A parent ending in `-01` exports the Codex observations; a parent ending in `-00` exports none of them, while completed turns are still written to the dedup sidecar as processed. Attached mode treats this upstream decision as authoritative even when `OTEL_TRACES_SAMPLER` is set. Standalone mode continues to honor the standard OpenTelemetry sampler environment variables. Invalid values fall back to `LANGFUSE_CODEX_TRACE_SEED` or an auto-generated trace; set `LANGFUSE_CODEX_FAIL_ON_ERROR=true` to reject them instead.
 
 ## Deterministic trace ids
 
@@ -212,9 +243,12 @@ The hook fails open: any tracing error is logged and swallowed so it never block
 ```bash
 pnpm install
 pnpm test        # build, then run the test suite
+pnpm run test:e2e # test a real Master span + bundled hook against Langfuse
 pnpm run lint    # prettier + tsc + build
 pnpm run build   # bundle the hook to plugins/tracing/dist/index.mjs
 ```
+
+The opt-in E2E test requires `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (plus `LANGFUSE_BASE_URL` for a non-EU or self-hosted instance). It creates one uniquely identified trace, validates the persisted parent-child tree through the public observations API, and deletes that trace before exiting. The regular test suite never sends data to Langfuse.
 
 The hook ships as a single self-contained `plugins/tracing/dist/index.mjs`, because Codex runs the plugin without an install step and never installs its dependencies. The bundle is a build output and is not committed: `prepack` builds it when the npm package is published, so it travels in the tarball instead of in Git. `pnpm test` builds first, since the hook-command test executes the bundled hook.
 
