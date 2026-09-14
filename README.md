@@ -20,7 +20,7 @@ Interrupted turns (where you cancel mid-response) are still uploaded and flagged
 
 - Node.js >= 22
 - The `npm` CLI on your `PATH`. Codex installs this plugin from the npm registry and shells out to `npm pack` to fetch it.
-- Codex >= 0.128
+- Codex >= 0.143
 - A [Langfuse Cloud](https://cloud.langfuse.com) account (or a [self-hosted](https://langfuse.com/self-hosting) instance) and API keys
 
 ## Installation
@@ -33,7 +33,7 @@ codex plugin marketplace add langfuse/codex-observability-plugin
 
 ### 2. Enable the plugin
 
-Enable hooks and the tracing plugin globally in `~/.codex/config.toml`, or only for a specific project in `<project>/.codex/config.toml`. Use the current `hooks` feature key; `plugin_hooks` was removed in Codex 0.146.
+Enable hooks and the tracing plugin globally in `~/.codex/config.toml`, or only for a specific project in `<project>/.codex/config.toml`. Use the current `hooks` feature key.
 
 ```toml
 [features]
@@ -162,7 +162,7 @@ curl -s -X POST "$LANGFUSE_BASE_URL/api/public/dataset-run-items" \
 LANGFUSE_CODEX_TRACE_SEED="$SEED" codex exec "your prompt"
 ```
 
-The same works from JavaScript with the Langfuse SDK: `await createTraceId(`${seed}:1`)` (from `@langfuse/tracing`) returns the identical id.
+The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${seed}:1`)`` (from `@langfuse/tracing`) returns the identical id.
 
 ## JSON config reference
 
@@ -228,7 +228,9 @@ git tag v0.4.0 && git push origin v0.4.0
 
 The workflow refuses a tag whose name disagrees with either version, then lints, tests, and stages the package on npm with provenance. A maintainer approves the staged publish with 2FA (`npm stage approve <id>`), and the draft GitHub release still has to be published. Finally, point `.agents/plugins/marketplace.json` at the new version, because that pin is what users install.
 
-The two versions matter for different things: the one in `package.json` is the npm version, and the one in `plugin.json` decides the cache directory Codex installs into (`~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/`) and therefore whether Codex refreshes an existing install at all. Publishing them out of step ships a package that reports the wrong version.
+The two versions you bump matter for different things. The one in `package.json` only decides which tarball npm hands out; the one in `plugin.json` is the version Codex installs under, so it names the cache directory (`~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/`) and therefore decides whether an existing install is refreshed at all — an automatic refresh compares the `plugin.json` version against that directory name and stops when they match, while an explicit `codex plugin add` is a force reinstall and updates in place even at an unchanged version. Publishing them out of step ships a package that reports the wrong version.
+
+Never leave `version` out of `plugin.json`: Codex then installs under the literal name `local` rather than the npm version, and because that name always matches itself, no automatic refresh will ever replace the install.
 
 ## License
 

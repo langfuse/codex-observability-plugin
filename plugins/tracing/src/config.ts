@@ -61,7 +61,7 @@ const CodexAuthSchema = z
       })
       .optional(),
   })
-  .passthrough();
+  .loose();
 
 function parseBoolean(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
