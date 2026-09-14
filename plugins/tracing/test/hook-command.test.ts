@@ -32,7 +32,13 @@ function runShellCommand(
   return new Promise((resolve, reject) => {
     const child = spawn(command, {
       cwd: options.cwd,
-      env: options.env,
+      env: {
+        ...options.env,
+        // Node reports unreadable keychain trust settings on stderr when the
+        // system CA store is enabled, as every TLS-inspecting corporate proxy
+        // sets it; the hook must stay the only writer for the checks below.
+        NODE_USE_SYSTEM_CA: "0",
+      },
       shell: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
