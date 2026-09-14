@@ -10,3 +10,6 @@ debug.log
 
 # Build output
 plugins/tracing/dist/
+
+# Claude Code scratch space; globbed so a later `!` negation works.
+.claude/*

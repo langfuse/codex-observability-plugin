@@ -33,8 +33,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Runs format:check, tsc --noEmit, and rebuilds dist to verify the
-      # committed bundle is up to date (lint:dist).
       - name: Lint
         run: pnpm run lint
 
