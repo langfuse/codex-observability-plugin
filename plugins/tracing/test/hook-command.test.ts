@@ -34,9 +34,6 @@ function runShellCommand(
       cwd: options.cwd,
       env: {
         ...options.env,
-        // Node reports unreadable keychain trust settings on stderr when the
-        // system CA store is enabled, as every TLS-inspecting corporate proxy
-        // sets it; the hook must stay the only writer for the checks below.
         NODE_USE_SYSTEM_CA: "0",
       },
       shell: true,
