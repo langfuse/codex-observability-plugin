@@ -321,11 +321,28 @@ function emitToolCall(
 }
 
 /**
+ * Whether a turn is done growing and can be exported.
+ *
+ * Codex runs the `Stop` hook and appends `task_complete` only after it exits,
+ * so the turn that just stopped is always still open on disk — `turn_id` from
+ * the payload is the only signal that it is done. Waiting for the event alone
+ * would defer that turn to the next invocation, which for a session's last turn
+ * never comes; exporting every open turn duplicates it instead.
+ */
+function isFinal(turn: Turn, stoppedTurnId: string | undefined): boolean {
+  if (turn.completed) return true;
+  return turn.turnId != null && turn.turnId === stoppedTurnId;
+}
+
+/**
  * Convert a Codex rollout file into Langfuse traces.
  *
  * Top-level turns each become their own trace (grouped into a Langfuse session
  * via the Codex thread id). Subagent rollouts are nested under the spawning
  * turn via `parentObservation`.
+ *
+ * Returns the ids of the top-level turns that were emitted, for the caller to
+ * record in the sidecar once the exporter has flushed.
  */
 export async function convertRollout(
   rolloutFile: string,
@@ -356,14 +373,12 @@ export async function convertRollout(
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
 
-    const isStoppedTurn = turn.turnId != null && turn.turnId === options.stoppedTurnId;
-    if (!turn.completed && !isStoppedTurn) {
-      debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final yet`);
+    if (!isFinal(turn, options.stoppedTurnId)) {
+      debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: still open`);
       continue;
     }
-
     if (turn.turnId && uploaded.has(turn.turnId)) {
-      continue; // already uploaded in a previous hook invocation
+      continue; // already delivered by a previous hook invocation
     }
 
     // Turn numbering stays 1-based over the full rollout (including turns
