@@ -14,6 +14,7 @@ import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 import type { Config } from "./config.js";
 import { parseArgs, parseSession } from "./parse.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
+import { skillsForToolCall, traceTags } from "./skills.js";
 import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
 import { debugLog, toText, truncate } from "./utils.js";
 
@@ -277,13 +278,17 @@ function buildGenerationOutput(step: ModelStep, clip: Clip): Record<string, unkn
 }
 
 /**
- * Observation name for a tool call. MCP calls use the clean `server.tool`
- * split from the mcp_tool_call_* events instead of the mangled function name;
- * everything else uses the plain tool name. Call arguments (shell command,
- * search query, …) stay out of the name — they belong to the observation
- * input.
+ * Observation name for a tool call. A call that picks up a skill is named
+ * `skill:<name>`, so skills stay groupable in Langfuse however Codex sourced
+ * them — from disk or as a connector resource, which would otherwise be named
+ * after the MCP call. Other MCP calls use the clean `server.tool` split from
+ * the mcp_tool_call_* events instead of the mangled function name; everything
+ * else uses the plain tool name. Call arguments (shell command, search query,
+ * …) stay out of the name — they belong to the observation input.
  */
 function toolObservationName(tc: ToolCall): string {
+  const skill = skillsForToolCall(tc)[0];
+  if (skill) return `skill:${skill}`;
   if (tc.mcp) return `${tc.mcp.server}.${tc.mcp.tool}`;
   return tc.name || "tool";
 }
@@ -531,12 +536,14 @@ export async function convertRollout(
     // skipped by dedup above) so the derived id is stable across hook runs.
     const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
 
+    const tags = traceTags(options.config, turn);
+
     await propagateAttributes(
       {
         sessionId: sessionMeta.sessionId,
         traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
         ...(options.config.user_id ? { userId: options.config.user_id } : {}),
-        ...(options.config.tags ? { tags: options.config.tags } : {}),
+        ...(tags.length > 0 ? { tags } : {}),
         ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
       },
       async () => {
