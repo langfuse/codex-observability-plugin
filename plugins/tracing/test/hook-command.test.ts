@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,6 +92,71 @@ describe("bundled Stop hook command", () => {
 
   it("does not depend on the old marketplace-root relative path", () => {
     expect(readHookCommand()).not.toContain("./plugins/tracing/dist/index.mjs");
+  });
+
+  it("delivers and marks the final turn of a single-turn session", async () => {
+    const codexHome = makeTempDir("lf-codex-home-");
+    const sessionCwd = makeTempDir("lf-codex-cwd-");
+    const rollout = path.join(sessionCwd, "rollout.jsonl");
+
+    // A one-turn session as the Stop hook sees it: the turn is still open on
+    // disk, and no later Stop hook will ever fire to finalize it.
+    const event = (payload: Record<string, unknown>) =>
+      JSON.stringify({ timestamp: "2026-06-03T12:00:00.000Z", type: "event_msg", payload });
+    fs.writeFileSync(
+      rollout,
+      [
+        JSON.stringify({
+          timestamp: "2026-06-03T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: "sess-final", cli_version: "0.149.0" },
+        }),
+        event({ type: "task_started", turn_id: "turn-final" }),
+        event({ type: "user_message", message: "What is 1 + 1?" }),
+        event({ type: "agent_message", message: "1 + 1 = 2." }),
+      ].join("\n") + "\n",
+    );
+
+    const received: string[] = [];
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(chunk as Buffer));
+      req.on("end", () => {
+        received.push(Buffer.concat(chunks).toString("utf-8"));
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+
+    try {
+      const { code } = await runShellCommand(readHookCommand(), {
+        cwd: sessionCwd,
+        env: {
+          ...process.env,
+          PLUGIN_ROOT: pluginRootDir,
+          CODEX_HOME: codexHome,
+          HOME: codexHome,
+          TRACE_TO_LANGFUSE: "true",
+          LANGFUSE_PUBLIC_KEY: "pk-lf-test",
+          LANGFUSE_SECRET_KEY: "sk-lf-test",
+          LANGFUSE_BASE_URL: `http://127.0.0.1:${port}`,
+        },
+        input: JSON.stringify({
+          hook_event_name: "Stop",
+          session_id: "sess-final",
+          turn_id: "turn-final",
+          transcript_path: rollout,
+        }),
+      });
+
+      expect(code).toBe(0);
+      expect(received.join("")).toContain("turn-final");
+      expect(fs.readFileSync(`${rollout}.langfuse`, "utf-8").trim()).toBe("turn-final");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("uses no shell syntax beyond the placeholder Codex substitutes itself", () => {
