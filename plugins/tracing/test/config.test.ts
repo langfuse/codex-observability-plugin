@@ -39,6 +39,7 @@ describe("getConfig", () => {
     expect(config.base_url).toBe("https://cloud.langfuse.com");
     expect(config.max_chars).toBe(20_000);
     expect(config.fail_on_error).toBe(false);
+    expect(config.skill_tags).toBe(true);
   });
 
   it("reads credentials and enable flag from environment variables", async () => {

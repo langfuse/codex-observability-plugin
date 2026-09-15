@@ -24,6 +24,7 @@ const baseConfig: Config = {
   public_key: "pk-lf-test",
   secret_key: "sk-lf-test",
   base_url: "https://cloud.langfuse.com",
+  skill_tags: true,
   max_chars: 20_000,
   debug: false,
   fail_on_error: false,
@@ -515,6 +516,25 @@ describe("deterministic trace ids (trace_seed)", () => {
     const roots = turnRoots();
     expect(roots).toHaveLength(1);
     expect(roots[0].spanContext().traceId).toBe(seededTraceId(`${seed}:2`));
+  });
+});
+
+describe("skill observations", () => {
+  it("names a skill-loading command after the skill, keeping its own timing", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-skills-main.jsonl"), { config: baseConfig });
+
+    const tools = exporter
+      .getFinishedSpans()
+      .filter((s) => obsType(s) === "tool")
+      .sort((a, b) => startMs(a) - startMs(b));
+    expect(tools.map((s) => s.name)).toEqual([
+      "skill:bug-mentor",
+      "exec_command",
+      "skill:skill-creator",
+    ]);
+    expect(attr(tools[0], "langfuse.observation.metadata.codex.tool_name")).toBe("exec_command");
+    expect(startMs(tools[0])).toBe(Date.parse("2026-06-03T13:00:02.000Z"));
   });
 });
 
