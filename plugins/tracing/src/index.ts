@@ -47,30 +47,33 @@ export async function runHook(): Promise<void> {
 
   const instrumentation = setupInstrumentation(config);
   let exportedTurnIds: string[] = [];
-  let exportFailed = false;
+  let failure: unknown;
+
   try {
     exportedTurnIds = await convertRollout(hookInput.transcript_path, {
       config,
       stoppedTurnId: hookInput.turn_id ?? undefined,
     });
   } catch (error) {
-    exportFailed = true;
+    failure = error;
     debugLog("failed to convert rollout:", error);
-    if (config.fail_on_error) throw error;
-  } finally {
-    try {
-      await instrumentation.shutdown();
-    } catch (error) {
-      exportFailed = true;
-      debugLog("error during flush/shutdown:", error);
-      if (config.fail_on_error) throw error;
-    }
   }
 
-  if (exportFailed) {
-    debugLog("export did not complete; leaving turns unmarked for a later retry");
+  try {
+    await instrumentation.shutdown();
+  } catch (error) {
+    failure ??= error;
+    debugLog("error during flush/shutdown:", error);
+  }
+
+  // Record delivery only after the flush: a turn marked despite a failed export
+  // is lost silently, while an unmarked one is retried.
+  if (failure) {
+    if (config.fail_on_error) throw failure;
+    debugLog("export incomplete; leaving turns unmarked so they stay retryable");
     return;
   }
+
   for (const turnId of exportedTurnIds) {
     await markTurnUploaded(hookInput.transcript_path, turnId);
   }
