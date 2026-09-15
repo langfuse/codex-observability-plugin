@@ -159,11 +159,11 @@ export type RolloutLine =
   | { timestamp: string; type: "event_msg"; payload: EventMsgPayload }
   | { timestamp: string; type: string; payload: Record<string, unknown> };
 
-/** Payload Codex passes to the `Stop` hook on stdin. */
+/** Payload Codex passes to the `Stop` hook on stdin. `turn_id` names the turn that stopped. */
 export type HookInput = {
   session_id?: string;
   turn_id?: string | null;
-  transcript_path: string;
+  transcript_path?: string | null;
   hook_event_name?: string;
 };
 
