@@ -183,6 +183,29 @@ describe("convertRollout", () => {
     expect(attr(childGeneration!, "langfuse.observation.model.name")).toBe("gpt-5.4");
   });
 
+  it("nests subagent turns discovered via the spawn tool output", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-spawn-output-main.jsonl"), { config: baseConfig });
+
+    const spans = exporter.getFinishedSpans();
+    const parent = spans.find((s) => s.name === "Codex Turn" && obsType(s) === "agent");
+    const childTurns = spans.filter(
+      (s) => s.name === "Codex Subagent Turn" && obsType(s) === "agent",
+    );
+    expect(parent).toBeDefined();
+    expect(childTurns).toHaveLength(1);
+    const child = childTurns[0];
+    expect(child.spanContext().traceId).toBe(parent!.spanContext().traceId);
+    expect(attr(child, "langfuse.observation.input")).toContain("hottest chilli");
+
+    const childGeneration = spans.find(
+      (s) => obsType(s) === "generation" && parentId(s) === child.spanContext().spanId,
+    );
+    expect(childGeneration?.name).toBe("LLM Subagent");
+    expect(attr(childGeneration!, "langfuse.observation.model.name")).toBe("gpt-5.6-sol");
+    expect(attr(child, "langfuse.observation.metadata.codex.thread_id")).toBe("thread-spawnout");
+  });
+
   it("captures web search, local shell, and MCP tool calls with specific names", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-tools-main.jsonl"), { config: baseConfig });

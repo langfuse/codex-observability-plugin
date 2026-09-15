@@ -276,6 +276,14 @@ export function parseSession(lines: RolloutLine[]): {
         if (tc) {
           if (tc.output == null) tc.output = out.output;
           tc.endTime = Math.max(tc.endTime ?? ts, ts);
+          if (tc.name === "spawn_agent") {
+            const spawned = parseArgs(toText(out.output));
+            const agentId =
+              spawned !== null && typeof spawned === "object"
+                ? (spawned as { agent_id?: unknown }).agent_id
+                : undefined;
+            if (typeof agentId === "string" && agentId) recordSubagentThread(agentId);
+          }
         }
       } else if (p.type === "reasoning") {
         const reasoning = extractReasoning(

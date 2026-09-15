@@ -1,0 +1,11 @@
+{"timestamp":"2026-06-03T14:00:00.000Z","type":"session_meta","payload":{"id":"sess-spawnout","cli_version":"0.147.0","model_provider":"openai","originator":"codex-tui"}}
+{"timestamp":"2026-06-03T14:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-spawnout"}}
+{"timestamp":"2026-06-03T14:00:01.200Z","type":"turn_context","payload":{"model":"gpt-5.5"}}
+{"timestamp":"2026-06-03T14:00:01.300Z","type":"event_msg","payload":{"type":"user_message","message":"Spawn a researcher to check the hottest chilli"}}
+{"timestamp":"2026-06-03T14:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"call-spawn-out","arguments":"{\"message\":\"check the hottest chilli\",\"fork_context\":false}"}}
+{"timestamp":"2026-06-03T14:00:02.800Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-spawn-out","output":"{\"agent_id\":\"thread-spawnout\",\"nickname\":\"Lorentz\"}"}}
+{"timestamp":"2026-06-03T14:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"wait_agent","call_id":"call-wait-out","arguments":"{\"targets\":[\"thread-spawnout\"],\"timeout_ms\":60000}"}}
+{"timestamp":"2026-06-03T14:00:05.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-wait-out","output":"{\"status\":{\"thread-spawnout\":{\"completed\":\"Pepper X\"}},\"timed_out\":false}"}}
+{"timestamp":"2026-06-03T14:00:05.500Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The researcher says: Pepper X"}]}}
+{"timestamp":"2026-06-03T14:00:05.600Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}
+{"timestamp":"2026-06-03T14:00:06.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-spawnout"}}

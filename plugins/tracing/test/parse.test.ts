@@ -130,6 +130,55 @@ describe("parseSession", () => {
     expect(turns[0].subagentThreadIds).toEqual(["thread-a"]);
   });
 
+  it("records subagent threads from the spawn tool output when no spawn event is emitted", () => {
+    const spawn = (callId: string, name: string): RolloutLine => ({
+      timestamp: "2026-06-03T13:10:02.000Z",
+      type: "response_item",
+      payload: { type: "function_call", name, call_id: callId, arguments: "{}" },
+    });
+    const spawnOutput = (callId: string, output: string): RolloutLine => ({
+      timestamp: "2026-06-03T13:10:02.800Z",
+      type: "response_item",
+      payload: { type: "function_call_output", call_id: callId, output },
+    });
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-06-03T13:10:00.000Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-06-03T13:10:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t" },
+      },
+      spawn("c1", "spawn_agent"),
+      spawnOutput("c1", '{"agent_id":"thread-a","nickname":"Lorentz"}'),
+      spawn("c2", "spawn_agent"),
+      spawnOutput("c2", '{"agent_id":"thread-b","nickname":"Mencius"}'),
+      spawn("c3", "spawn_agent"),
+      {
+        timestamp: "2026-06-03T13:10:02.500Z",
+        type: "event_msg",
+        payload: {
+          type: "sub_agent_activity",
+          event_id: "c3",
+          agent_thread_id: "thread-c",
+          kind: "started",
+        },
+      },
+      spawnOutput("c3", '{"agent_id":"thread-c","nickname":"Popper"}'),
+      spawn("c4", "spawn_agent"),
+      spawnOutput("c4", '{"error":"agent limit reached"}'),
+      spawn("c5", "wait_agent"),
+      spawnOutput("c5", '{"agent_id":"thread-a","status":{}}'),
+      {
+        timestamp: "2026-06-03T13:10:04.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t" },
+      },
+    ];
+    const { turns } = parseSession(lines);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].subagentThreadIds).toEqual(["thread-a", "thread-b", "thread-c"]);
+  });
+
   it("treats a trailing, never-completed turn as not completed", () => {
     const lines: RolloutLine[] = [
       { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },
