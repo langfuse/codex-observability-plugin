@@ -1,5 +1,6 @@
 import { getConfig } from "./config.js";
 import { setupInstrumentation } from "./instrumentation.js";
+import { markTurnUploaded } from "./sidecar.js";
 import { convertRollout } from "./trace.js";
 import type { HookInput } from "./types.js";
 import { debugLog, readStdin, setDebug } from "./utils.js";
@@ -45,18 +46,33 @@ export async function runHook(): Promise<void> {
   }
 
   const instrumentation = setupInstrumentation(config);
+  let exportedTurnIds: string[] = [];
+  let exportFailed = false;
   try {
-    await convertRollout(hookInput.transcript_path, { config });
+    exportedTurnIds = await convertRollout(hookInput.transcript_path, {
+      config,
+      stoppedTurnId: hookInput.turn_id ?? undefined,
+    });
   } catch (error) {
+    exportFailed = true;
     debugLog("failed to convert rollout:", error);
     if (config.fail_on_error) throw error;
   } finally {
     try {
       await instrumentation.shutdown();
     } catch (error) {
+      exportFailed = true;
       debugLog("error during flush/shutdown:", error);
       if (config.fail_on_error) throw error;
     }
+  }
+
+  if (exportFailed) {
+    debugLog("export did not complete; leaving turns unmarked for a later retry");
+    return;
+  }
+  for (const turnId of exportedTurnIds) {
+    await markTurnUploaded(hookInput.transcript_path, turnId);
   }
 }
 

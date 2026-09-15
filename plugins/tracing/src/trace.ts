@@ -13,7 +13,7 @@ import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
 import { parseSession } from "./parse.js";
-import { loadUploadedTurnIds, markTurnUploaded } from "./sidecar.js";
+import { loadUploadedTurnIds } from "./sidecar.js";
 import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
 import { debugLog, toText, truncate } from "./utils.js";
 
@@ -329,8 +329,12 @@ function emitToolCall(
  */
 export async function convertRollout(
   rolloutFile: string,
-  options: { config: Config; parentObservation?: LangfuseObservation },
-): Promise<void> {
+  options: {
+    config: Config;
+    parentObservation?: LangfuseObservation;
+    stoppedTurnId?: string;
+  },
+): Promise<string[]> {
   const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
   debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 
@@ -343,14 +347,22 @@ export async function convertRollout(
         parentObservation: options.parentObservation,
       });
     }
-    return;
+    return [];
   }
 
   const uploaded = await loadUploadedTurnIds(rolloutFile);
+  const exportedTurnIds: string[] = [];
 
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
-    if (turn.completed && turn.turnId && uploaded.has(turn.turnId)) {
+
+    const isStoppedTurn = turn.turnId != null && turn.turnId === options.stoppedTurnId;
+    if (!turn.completed && !isStoppedTurn) {
+      debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final yet`);
+      continue;
+    }
+
+    if (turn.turnId && uploaded.has(turn.turnId)) {
       continue; // already uploaded in a previous hook invocation
     }
 
@@ -375,15 +387,11 @@ export async function convertRollout(
       },
     );
 
-    // Only mark completed turns as uploaded; an in-progress trailing turn is
-    // re-uploaded (and finalized) on the next hook invocation.
-    if (turn.completed && turn.turnId) {
+    if (turn.turnId) {
       uploaded.add(turn.turnId);
-      await markTurnUploaded(rolloutFile, turn.turnId);
-    } else if (turn.turnId) {
-      debugLog(
-        `uploaded in-progress turn ${turn.turnId}; waiting for completion before sidecar mark`,
-      );
+      exportedTurnIds.push(turn.turnId);
     }
   }
+
+  return exportedTurnIds;
 }
