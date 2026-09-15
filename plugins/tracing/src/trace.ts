@@ -12,7 +12,7 @@ import {
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
-import { parseSession } from "./parse.js";
+import { parseArgs, parseSession } from "./parse.js";
 import { loadUploadedTurnIds, markTurnUploaded } from "./sidecar.js";
 import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
 import { debugLog, toText, truncate } from "./utils.js";
@@ -32,40 +32,128 @@ async function loadSession(file: string): Promise<RolloutLine[]> {
   return lines;
 }
 
-/**
- * Resolve a subagent's rollout file from its thread id.
- *
- * Rollouts live at `<sessionsRoot>/YYYY/MM/DD/rollout-<ts>-<threadId>.jsonl`.
- * Starting from the parent rollout, we walk up to the sessions root and search
- * for a file whose name ends with the subagent's thread id.
- */
-async function findSubagentRollout(
-  parentFile: string,
-  threadId: string,
-): Promise<string | undefined> {
-  const suffix = `-${threadId}.jsonl`;
-  const root = path.resolve(path.dirname(parentFile), "../../..");
+type SubagentRollout = {
+  threadId: string;
+  file: string;
+  startTime: number;
+  nickname?: string;
+};
 
-  async function walk(dir: string): Promise<string | undefined> {
+export type SubagentIndex = {
+  byParent: Map<string, SubagentRollout[]>;
+  byThread: Map<string, SubagentRollout>;
+};
+
+async function readSessionMeta(
+  file: string,
+): Promise<
+  { threadId: string; parentThreadId?: string; startTime: number; nickname?: string } | undefined
+> {
+  let handle;
+  try {
+    handle = await fs.open(file, "r");
+    const buffer = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const text = buffer.subarray(0, bytesRead).toString("utf-8");
+    const newline = text.indexOf("\n");
+    const line = newline === -1 ? text : text.slice(0, newline);
+    const parsed = JSON.parse(line) as RolloutLine;
+    if (parsed.type !== "session_meta") return undefined;
+    const p = parsed.payload as {
+      id?: string;
+      parent_thread_id?: string | null;
+      agent_nickname?: string | null;
+      source?: { subagent?: { thread_spawn?: { agent_nickname?: string | null } } };
+    };
+    if (typeof p.id !== "string") return undefined;
+    const ts = Date.parse(parsed.timestamp);
+    const nickname = p.agent_nickname ?? p.source?.subagent?.thread_spawn?.agent_nickname;
+    return {
+      threadId: p.id,
+      parentThreadId: typeof p.parent_thread_id === "string" ? p.parent_thread_id : undefined,
+      startTime: Number.isFinite(ts) ? ts : 0,
+      nickname: typeof nickname === "string" && nickname ? nickname : undefined,
+    };
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close();
+  }
+}
+
+export async function buildSubagentIndex(rolloutFile: string): Promise<SubagentIndex> {
+  const root = path.resolve(path.dirname(rolloutFile), "../../..");
+  const fromDay = path.relative(root, path.dirname(rolloutFile));
+  const bounded = /^\d{4}\/\d{2}\/\d{2}$/.test(fromDay);
+  const index: SubagentIndex = { byParent: new Map(), byThread: new Map() };
+
+  async function walk(dir: string, rel: string): Promise<void> {
+    if (bounded && rel && rel < fromDay.slice(0, rel.length)) return;
     let entries: Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
     } catch {
-      return undefined;
+      return;
     }
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        const found = await walk(full);
-        if (found) return found;
-      } else if (entry.isFile() && entry.name.endsWith(suffix)) {
-        return full;
+        await walk(full, rel ? `${rel}/${entry.name}` : entry.name);
+        continue;
       }
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+      const meta = await readSessionMeta(full);
+      if (!meta) continue;
+      if (index.byThread.has(meta.threadId)) continue;
+      const rollout: SubagentRollout = {
+        threadId: meta.threadId,
+        file: full,
+        startTime: meta.startTime,
+        nickname: meta.nickname,
+      };
+      index.byThread.set(meta.threadId, rollout);
+      if (!meta.parentThreadId) continue;
+      index.byParent.set(meta.parentThreadId, [
+        ...(index.byParent.get(meta.parentThreadId) ?? []),
+        rollout,
+      ]);
     }
-    return undefined;
   }
 
-  return walk(root);
+  await walk(root, "");
+  return index;
+}
+
+function turnIndexByNickname(turns: Turn[]): Map<string, number> {
+  const byNickname = new Map<string, number>();
+  const ambiguous = new Set<string>();
+  turns.forEach((turn, index) => {
+    for (const tc of turn.steps.flatMap((s) => s.toolCalls)) {
+      if (tc.name !== "spawn_agent" || tc.output == null) continue;
+      const out = parseArgs(toText(tc.output));
+      const nickname =
+        out !== null && typeof out === "object"
+          ? (out as { nickname?: unknown }).nickname
+          : undefined;
+      if (typeof nickname !== "string" || !nickname) continue;
+      if (byNickname.has(nickname) && byNickname.get(nickname) !== index) {
+        ambiguous.add(nickname);
+      }
+      byNickname.set(nickname, index);
+    }
+  });
+  for (const nickname of ambiguous) byNickname.delete(nickname);
+  return byNickname;
+}
+
+function turnIndexAt(turns: Turn[], startTime: number): number {
+  const running = turns.findIndex((t) => startTime >= t.startTime && startTime <= t.endTime);
+  if (running !== -1) return running;
+  let last = 0;
+  for (let i = 0; i < turns.length; i++) {
+    if (turns[i].startTime <= startTime) last = i;
+  }
+  return last;
 }
 
 /**
@@ -210,6 +298,9 @@ async function emitTurn(
     parentObservation?: LangfuseObservation;
     /** Pre-derived trace id for top-level turns (see seededTraceParent). */
     seededParent?: SpanContext;
+    subagentIndex: SubagentIndex;
+    seenThreadIds: Set<string>;
+    unannouncedSubagents?: SubagentRollout[];
   },
 ): Promise<void> {
   const clip = makeClip(ctx.config.max_chars);
@@ -284,13 +375,24 @@ async function emitTurn(
   }
 
   // Subagent threads spawned by this turn are nested under the turn root.
+  const announced: SubagentRollout[] = [];
   for (const threadId of turn.subagentThreadIds) {
-    const subFile = await findSubagentRollout(ctx.rolloutFile, threadId);
-    if (!subFile) {
+    const rollout = ctx.subagentIndex.byThread.get(threadId);
+    if (!rollout) {
       debugLog(`subagent rollout not found for thread ${threadId}`);
       continue;
     }
-    await convertRollout(subFile, { config: ctx.config, parentObservation: root });
+    announced.push(rollout);
+  }
+  for (const sub of [...announced, ...(ctx.unannouncedSubagents ?? [])]) {
+    if (ctx.seenThreadIds.has(sub.threadId)) continue;
+    ctx.seenThreadIds.add(sub.threadId);
+    await convertRollout(sub.file, {
+      config: ctx.config,
+      parentObservation: root,
+      subagentIndex: ctx.subagentIndex,
+      seenThreadIds: ctx.seenThreadIds,
+    });
   }
 
   root.end(new Date(turn.endTime));
@@ -329,18 +431,47 @@ function emitToolCall(
  */
 export async function convertRollout(
   rolloutFile: string,
-  options: { config: Config; parentObservation?: LangfuseObservation },
+  options: {
+    config: Config;
+    parentObservation?: LangfuseObservation;
+    subagentIndex?: SubagentIndex;
+    seenThreadIds?: Set<string>;
+  },
 ): Promise<void> {
   const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
   debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 
+  const subagentIndex = options.subagentIndex ?? (await buildSubagentIndex(rolloutFile));
+  const seenThreadIds = options.seenThreadIds ?? new Set<string>();
+  seenThreadIds.add(sessionMeta.sessionId);
+
+  const announced = new Set(turns.flatMap((t) => t.subagentThreadIds));
+  const unannounced = (subagentIndex.byParent.get(sessionMeta.sessionId) ?? []).filter(
+    (s) => !announced.has(s.threadId) && !seenThreadIds.has(s.threadId),
+  );
+  const spawnTurnOf =
+    unannounced.length > 0 ? turnIndexByNickname(turns) : new Map<string, number>();
+  const byTurn = new Map<number, SubagentRollout[]>();
+  for (const sub of unannounced) {
+    const viaNickname = sub.nickname !== undefined ? spawnTurnOf.get(sub.nickname) : undefined;
+    const i = viaNickname ?? turnIndexAt(turns, sub.startTime);
+    debugLog(
+      `recovered unannounced subagent ${sub.threadId} for thread ${sessionMeta.sessionId}: ` +
+        `turn ${i + 1} via ${viaNickname !== undefined ? `nickname ${sub.nickname}` : "start time"}`,
+    );
+    byTurn.set(i, [...(byTurn.get(i) ?? []), sub]);
+  }
+
   // Subagent rollout: nest everything under the parent turn, no dedup/session wrapping.
   if (options.parentObservation) {
-    for (const turn of turns) {
-      await emitTurn(turn, sessionMeta, {
+    for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
+      await emitTurn(turns[turnIndex], sessionMeta, {
         config: options.config,
         rolloutFile,
         parentObservation: options.parentObservation,
+        subagentIndex,
+        seenThreadIds,
+        unannouncedSubagents: byTurn.get(turnIndex),
       });
     }
     return;
@@ -371,6 +502,9 @@ export async function convertRollout(
           config: options.config,
           rolloutFile,
           seededParent,
+          subagentIndex,
+          seenThreadIds,
+          unannouncedSubagents: byTurn.get(turnIndex),
         });
       },
     );
