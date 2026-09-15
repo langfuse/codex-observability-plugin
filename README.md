@@ -202,6 +202,7 @@ The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${s
   npx @langfuse/cli --api-version 3 api traces list \
     --from-timestamp <iso> --limit 10 --order-by timestamp.desc --fields core,metrics,observations --json
   ```
+
 - **Sandboxed/network-restricted runs** — Codex sandbox or network policy can prevent exports from reaching Langfuse. Debug logging and fail-on-error mode are the quickest way to distinguish hook execution from network failure.
 - **Self-hosting** — the TypeScript SDK requires Langfuse platform version >= 3.95.0.
 
