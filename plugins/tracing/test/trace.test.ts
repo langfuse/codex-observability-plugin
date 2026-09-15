@@ -13,7 +13,7 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { Config } from "../src/config.js";
-import { convertRollout } from "../src/trace.js";
+import { buildSubagentIndex, convertRollout } from "../src/trace.js";
 
 const exporter = new InMemorySpanExporter();
 let provider: NodeTracerProvider;
@@ -204,6 +204,86 @@ describe("convertRollout", () => {
     expect(childGeneration?.name).toBe("LLM Subagent");
     expect(attr(childGeneration!, "langfuse.observation.model.name")).toBe("gpt-5.6-sol");
     expect(attr(child, "langfuse.observation.metadata.codex.thread_id")).toBe("thread-spawnout");
+  });
+
+  it("recovers a subagent the transcript never announced, under the turn it ran in", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-orphan-main.jsonl"), { config: baseConfig });
+
+    const spans = exporter.getFinishedSpans();
+    const childTurns = spans.filter(
+      (s) => s.name === "Codex Subagent Turn" && obsType(s) === "agent",
+    );
+    expect(childTurns).toHaveLength(1);
+    const child = childTurns[0];
+
+    const parent = spans.find((s) => s.spanContext().spanId === parentId(child));
+    expect(parent?.name).toBe("Codex Turn");
+    expect(attr(parent!, "langfuse.observation.metadata.codex.turn_id")).toBe("turn-orphan-2");
+    expect(child.spanContext().traceId).toBe(parent!.spanContext().traceId);
+
+    const childGeneration = spans.find(
+      (s) => obsType(s) === "generation" && parentId(s) === child.spanContext().spanId,
+    );
+    expect(childGeneration?.name).toBe("LLM Subagent");
+    expect(attr(childGeneration!, "langfuse.observation.model.name")).toBe("gpt-5.6-sol");
+  });
+
+  it("skips an announced subagent whose rollout is missing, without failing the turn", async () => {
+    const dir = stageFixtures();
+    fs.rmSync(path.join(dir, "rollout-child-thread-act.jsonl"));
+    await convertRollout(path.join(dir, "rollout-activity-main.jsonl"), { config: baseConfig });
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans.filter((s) => s.name === "Codex Subagent Turn")).toHaveLength(0);
+    const parent = spans.find((s) => s.name === "Codex Turn");
+    expect(parent).toBeDefined();
+    expect(attr(parent!, "langfuse.observation.output")).toContain("42");
+  });
+
+  it("indexes the sessions tree by declared parent, skipping days before the parent's", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-index-"));
+    const write = (day: string, name: string, first: unknown) => {
+      const dir = path.join(root, day);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, name), `${JSON.stringify(first)}\n`);
+    };
+    const meta = (id: string, parent?: string) => ({
+      timestamp: "2026-06-03T12:00:00.000Z",
+      type: "session_meta",
+      payload: { id, ...(parent ? { parent_thread_id: parent } : {}) },
+    });
+
+    write("2026/06/03", "rollout-a-parent.jsonl", meta("parent"));
+    write("2026/06/03", "rollout-b-kid1.jsonl", meta("kid1", "parent"));
+    write("2026/06/04", "rollout-c-kid2.jsonl", meta("kid2", "parent"));
+    write("2026/06/02", "rollout-d-stale.jsonl", meta("stale", "parent"));
+    write("2026/06/03", "rollout-e-broken.jsonl", "{not json");
+    write("2026/06/03", "rollout-f-headless.jsonl", { type: "event_msg", payload: {} });
+
+    const index = await buildSubagentIndex(path.join(root, "2026/06/03/rollout-a-parent.jsonl"));
+    expect(
+      index.byParent
+        .get("parent")
+        ?.map((s) => s.threadId)
+        .sort(),
+    ).toEqual(["kid1", "kid2"]);
+    expect(index.byThread.get("kid1")?.file).toBe(
+      path.join(root, "2026/06/03/rollout-b-kid1.jsonl"),
+    );
+    expect(index.byThread.get("parent")?.file).toBe(
+      path.join(root, "2026/06/03/rollout-a-parent.jsonl"),
+    );
+    expect(index.byParent.has("stale")).toBe(false);
+  });
+
+  it("does not nest an announced subagent twice when the tree also reports it", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-activity-main.jsonl"), { config: baseConfig });
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans.filter((s) => s.name === "Codex Subagent Turn")).toHaveLength(1);
+    expect(spans.filter((s) => s.name === "LLM Subagent")).toHaveLength(1);
   });
 
   it("captures web search, local shell, and MCP tool calls with specific names", async () => {
