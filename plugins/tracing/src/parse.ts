@@ -56,7 +56,7 @@ function extractReasoning(item: {
   return "";
 }
 
-function parseArgs(raw: string): unknown {
+export function parseArgs(raw: string): unknown {
   if (typeof raw !== "string") return raw;
   try {
     return JSON.parse(raw);

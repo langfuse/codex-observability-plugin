@@ -12,7 +12,7 @@ import {
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
-import { parseSession } from "./parse.js";
+import { parseArgs, parseSession } from "./parse.js";
 import { loadUploadedTurnIds, markTurnUploaded } from "./sidecar.js";
 import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
 import { debugLog, toText, truncate } from "./utils.js";
@@ -36,6 +36,7 @@ type SubagentRollout = {
   threadId: string;
   file: string;
   startTime: number;
+  nickname?: string;
 };
 
 export type SubagentIndex = {
@@ -45,7 +46,9 @@ export type SubagentIndex = {
 
 async function readSessionMeta(
   file: string,
-): Promise<{ threadId: string; parentThreadId?: string; startTime: number } | undefined> {
+): Promise<
+  { threadId: string; parentThreadId?: string; startTime: number; nickname?: string } | undefined
+> {
   let handle;
   try {
     handle = await fs.open(file, "r");
@@ -56,13 +59,20 @@ async function readSessionMeta(
     const line = newline === -1 ? text : text.slice(0, newline);
     const parsed = JSON.parse(line) as RolloutLine;
     if (parsed.type !== "session_meta") return undefined;
-    const p = parsed.payload as { id?: string; parent_thread_id?: string | null };
+    const p = parsed.payload as {
+      id?: string;
+      parent_thread_id?: string | null;
+      agent_nickname?: string | null;
+      source?: { subagent?: { thread_spawn?: { agent_nickname?: string | null } } };
+    };
     if (typeof p.id !== "string") return undefined;
     const ts = Date.parse(parsed.timestamp);
+    const nickname = p.agent_nickname ?? p.source?.subagent?.thread_spawn?.agent_nickname;
     return {
       threadId: p.id,
       parentThreadId: typeof p.parent_thread_id === "string" ? p.parent_thread_id : undefined,
       startTime: Number.isFinite(ts) ? ts : 0,
+      nickname: typeof nickname === "string" && nickname ? nickname : undefined,
     };
   } catch {
     return undefined;
@@ -99,6 +109,7 @@ export async function buildSubagentIndex(rolloutFile: string): Promise<SubagentI
         threadId: meta.threadId,
         file: full,
         startTime: meta.startTime,
+        nickname: meta.nickname,
       };
       index.byThread.set(meta.threadId, rollout);
       if (!meta.parentThreadId) continue;
@@ -111,6 +122,28 @@ export async function buildSubagentIndex(rolloutFile: string): Promise<SubagentI
 
   await walk(root, "");
   return index;
+}
+
+function turnIndexByNickname(turns: Turn[]): Map<string, number> {
+  const byNickname = new Map<string, number>();
+  const ambiguous = new Set<string>();
+  turns.forEach((turn, index) => {
+    for (const tc of turn.steps.flatMap((s) => s.toolCalls)) {
+      if (tc.name !== "spawn_agent" || tc.output == null) continue;
+      const out = parseArgs(toText(tc.output));
+      const nickname =
+        out !== null && typeof out === "object"
+          ? (out as { nickname?: unknown }).nickname
+          : undefined;
+      if (typeof nickname !== "string" || !nickname) continue;
+      if (byNickname.has(nickname) && byNickname.get(nickname) !== index) {
+        ambiguous.add(nickname);
+      }
+      byNickname.set(nickname, index);
+    }
+  });
+  for (const nickname of ambiguous) byNickname.delete(nickname);
+  return byNickname;
 }
 
 function turnIndexAt(turns: Turn[], startTime: number): number {
@@ -416,12 +449,15 @@ export async function convertRollout(
   const unannounced = (subagentIndex.byParent.get(sessionMeta.sessionId) ?? []).filter(
     (s) => !announced.has(s.threadId) && !seenThreadIds.has(s.threadId),
   );
+  const spawnTurnOf =
+    unannounced.length > 0 ? turnIndexByNickname(turns) : new Map<string, number>();
   const byTurn = new Map<number, SubagentRollout[]>();
   for (const sub of unannounced) {
-    const i = turnIndexAt(turns, sub.startTime);
+    const viaNickname = sub.nickname !== undefined ? spawnTurnOf.get(sub.nickname) : undefined;
+    const i = viaNickname ?? turnIndexAt(turns, sub.startTime);
     debugLog(
       `recovered unannounced subagent ${sub.threadId} for thread ${sessionMeta.sessionId}: ` +
-        `turn ${i + 1} via start time`,
+        `turn ${i + 1} via ${viaNickname !== undefined ? `nickname ${sub.nickname}` : "start time"}`,
     );
     byTurn.set(i, [...(byTurn.get(i) ?? []), sub]);
   }

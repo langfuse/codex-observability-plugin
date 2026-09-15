@@ -206,7 +206,7 @@ describe("convertRollout", () => {
     expect(attr(child, "langfuse.observation.metadata.codex.thread_id")).toBe("thread-spawnout");
   });
 
-  it("recovers a subagent the transcript never announced, under the turn it ran in", async () => {
+  it("recovers an unannounced subagent by start time when its nickname is ambiguous", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-orphan-main.jsonl"), { config: baseConfig });
 
@@ -241,6 +241,20 @@ describe("convertRollout", () => {
     expect(attr(parent!, "langfuse.observation.output")).toContain("42");
   });
 
+  it("attributes an unannounced subagent by nickname, overriding its start time", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-nickname-main.jsonl"), { config: baseConfig });
+
+    const spans = exporter.getFinishedSpans();
+    const childTurns = spans.filter((s) => s.name === "Codex Subagent Turn");
+    expect(childTurns).toHaveLength(1);
+    const child = childTurns[0];
+    const parent = spans.find((s) => s.spanContext().spanId === parentId(child));
+
+    expect(attr(parent!, "langfuse.observation.metadata.codex.turn_id")).toBe("turn-nick-1");
+    expect(child.spanContext().traceId).toBe(parent!.spanContext().traceId);
+  });
+
   it("indexes the sessions tree by declared parent, skipping days before the parent's", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-index-"));
     const write = (day: string, name: string, first: unknown) => {
@@ -248,18 +262,31 @@ describe("convertRollout", () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, name), `${JSON.stringify(first)}\n`);
     };
-    const meta = (id: string, parent?: string) => ({
+    const meta = (id: string, parent?: string, nickname?: string) => ({
       timestamp: "2026-06-03T12:00:00.000Z",
       type: "session_meta",
-      payload: { id, ...(parent ? { parent_thread_id: parent } : {}) },
+      payload: {
+        id,
+        ...(parent ? { parent_thread_id: parent } : {}),
+        ...(nickname ? { agent_nickname: nickname } : {}),
+      },
     });
 
     write("2026/06/03", "rollout-a-parent.jsonl", meta("parent"));
-    write("2026/06/03", "rollout-b-kid1.jsonl", meta("kid1", "parent"));
+    write("2026/06/03", "rollout-b-kid1.jsonl", meta("kid1", "parent", "Lorentz"));
     write("2026/06/04", "rollout-c-kid2.jsonl", meta("kid2", "parent"));
     write("2026/06/02", "rollout-d-stale.jsonl", meta("stale", "parent"));
     write("2026/06/03", "rollout-e-broken.jsonl", "{not json");
     write("2026/06/03", "rollout-f-headless.jsonl", { type: "event_msg", payload: {} });
+    write("2026/06/03", "rollout-g-kid3.jsonl", {
+      timestamp: "2026-06-03T12:00:00.000Z",
+      type: "session_meta",
+      payload: {
+        id: "kid3",
+        parent_thread_id: "parent",
+        source: { subagent: { thread_spawn: { agent_nickname: "Kepler" } } },
+      },
+    });
 
     const index = await buildSubagentIndex(path.join(root, "2026/06/03/rollout-a-parent.jsonl"));
     expect(
@@ -267,10 +294,13 @@ describe("convertRollout", () => {
         .get("parent")
         ?.map((s) => s.threadId)
         .sort(),
-    ).toEqual(["kid1", "kid2"]);
+    ).toEqual(["kid1", "kid2", "kid3"]);
     expect(index.byThread.get("kid1")?.file).toBe(
       path.join(root, "2026/06/03/rollout-b-kid1.jsonl"),
     );
+    expect(index.byThread.get("kid1")?.nickname).toBe("Lorentz");
+    expect(index.byThread.get("kid3")?.nickname).toBe("Kepler");
+    expect(index.byThread.get("kid2")?.nickname).toBeUndefined();
     expect(index.byThread.get("parent")?.file).toBe(
       path.join(root, "2026/06/03/rollout-a-parent.jsonl"),
     );
