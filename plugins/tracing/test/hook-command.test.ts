@@ -97,7 +97,11 @@ describe("bundled Stop hook command", () => {
   it("delivers and marks the final turn of a single-turn session", async () => {
     const codexHome = makeTempDir("lf-codex-home-");
     const sessionCwd = makeTempDir("lf-codex-cwd-");
-    const rollout = path.join(sessionCwd, "rollout.jsonl");
+    // Mirror the real `sessions/YYYY/MM/DD` layout: the hook derives the
+    // sessions root from the rollout path to discover subagent threads.
+    const sessionsDir = path.join(sessionCwd, "sessions", "2026", "06", "03");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const rollout = path.join(sessionsDir, "rollout.jsonl");
 
     // A one-turn session as the Stop hook sees it: the turn is still open on
     // disk, and no later Stop hook will ever fire to finalize it.

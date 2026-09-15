@@ -1,0 +1,22 @@
+{"timestamp":"2026-06-03T15:00:00.000Z","type":"session_meta","payload":{"id":"sess-orphan","cli_version":"0.148.0","model_provider":"openai","originator":"Codex Desktop","multi_agent_version":"v1"}}
+{"timestamp":"2026-06-03T15:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-orphan-1"}}
+{"timestamp":"2026-06-03T15:00:01.200Z","type":"turn_context","payload":{"model":"gpt-5.5"}}
+{"timestamp":"2026-06-03T15:00:01.300Z","type":"event_msg","payload":{"type":"user_message","message":"Spawn a helper"}}
+{"timestamp":"2026-06-03T15:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"call-orphan-1","arguments":"{\"message\":\"first task\"}"}}
+{"timestamp":"2026-06-03T15:00:02.800Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-orphan-1","output":"{\"handle\":\"opaque-1\",\"nickname\":\"Kepler\"}"}}
+{"timestamp":"2026-06-03T15:00:04.600Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}
+{"timestamp":"2026-06-03T15:00:05.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-orphan-1"}}
+{"timestamp":"2026-06-03T15:00:10.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-orphan-2"}}
+{"timestamp":"2026-06-03T15:00:10.200Z","type":"turn_context","payload":{"model":"gpt-5.5"}}
+{"timestamp":"2026-06-03T15:00:10.300Z","type":"event_msg","payload":{"type":"user_message","message":"Meanwhile, what is 2+2?"}}
+{"timestamp":"2026-06-03T15:00:18.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"4"}]}}
+{"timestamp":"2026-06-03T15:00:19.600Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":15,"output_tokens":3,"total_tokens":18,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}
+{"timestamp":"2026-06-03T15:00:20.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-orphan-2"}}
+{"timestamp":"2026-06-03T15:00:25.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-orphan-3"}}
+{"timestamp":"2026-06-03T15:00:25.200Z","type":"turn_context","payload":{"model":"gpt-5.5"}}
+{"timestamp":"2026-06-03T15:00:25.300Z","type":"event_msg","payload":{"type":"user_message","message":"Spawn another helper"}}
+{"timestamp":"2026-06-03T15:00:26.000Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"call-orphan-3","arguments":"{\"message\":\"second task\"}"}}
+{"timestamp":"2026-06-03T15:00:26.800Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-orphan-3","output":"{\"handle\":\"opaque-3\",\"nickname\":\"Kepler\"}"}}
+{"timestamp":"2026-06-03T15:00:34.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Both helpers are running."}]}}
+{"timestamp":"2026-06-03T15:00:34.600Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":8,"output_tokens":3,"total_tokens":11,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":23,"output_tokens":6,"total_tokens":29,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}
+{"timestamp":"2026-06-03T15:00:35.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-orphan-3"}}
