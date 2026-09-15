@@ -1,6 +1,7 @@
 import { getConfig } from "./config.js";
 import { setupInstrumentation } from "./instrumentation.js";
 import { convertRollout } from "./trace.js";
+import { markTurnUploaded } from "./sidecar.js";
 import type { HookInput } from "./types.js";
 import { debugLog, readStdin, setDebug } from "./utils.js";
 
@@ -45,18 +46,32 @@ export async function runHook(): Promise<void> {
   }
 
   const instrumentation = setupInstrumentation(config);
+  let uploadedTurnIds: string[] = [];
+  let failure: unknown;
   try {
-    await convertRollout(hookInput.transcript_path, { config });
+    uploadedTurnIds = await convertRollout(hookInput.transcript_path, {
+      config,
+      finalizeTurnId: hookInput.turn_id ?? undefined,
+    });
   } catch (error) {
-    debugLog("failed to convert rollout:", error);
-    if (config.fail_on_error) throw error;
-  } finally {
-    try {
-      await instrumentation.shutdown();
-    } catch (error) {
-      debugLog("error during flush/shutdown:", error);
-      if (config.fail_on_error) throw error;
-    }
+    failure = error;
+  }
+  try {
+    await instrumentation.shutdown();
+  } catch (error) {
+    failure ??= error;
+  }
+  if (failure) {
+    // Fail-open must still be observable, and without a sidecar entry a later
+    // hook or manual replay can retry the turn.
+    // eslint-disable-next-line no-console
+    console.error("[langfuse-codex] telemetry export failed; turn remains retryable");
+    debugLog("telemetry export failure:", failure);
+    if (config.fail_on_error) throw failure;
+    return;
+  }
+  for (const turnId of uploadedTurnIds) {
+    await markTurnUploaded(hookInput.transcript_path, turnId);
   }
 }
 

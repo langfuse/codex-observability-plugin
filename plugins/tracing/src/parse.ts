@@ -14,6 +14,7 @@ import type {
   ToolCall,
   Turn,
 } from "./types.js";
+import { isTerminalTurnEvent } from "./turn-lifecycle.js";
 import { isPrimitive, toText } from "./utils.js";
 
 /** Extract printable text from a Codex message `content` array. */
@@ -314,10 +315,8 @@ export function parseSession(lines: RolloutLine[]): {
       } else if (et === "token_count") {
         if (p.info?.total_token_usage) turn!.totalUsage = p.info.total_token_usage;
         closeStep(ts, p.info?.last_token_usage ?? undefined);
-      } else if (et === "task_complete") {
-        finishTurn(ts, { completed: true, aborted: false });
-      } else if (et === "turn_aborted") {
-        finishTurn(ts, { completed: true, aborted: true });
+      } else if (isTerminalTurnEvent(et)) {
+        finishTurn(ts, { completed: true, aborted: et === "turn_aborted" });
       } else {
         // A subagent spawn records the child thread *and* (since it carries a
         // call_id ending in "_end") enriches the spawning tool call below.
