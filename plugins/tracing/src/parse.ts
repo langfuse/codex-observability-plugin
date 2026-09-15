@@ -84,6 +84,8 @@ function extractToolError(payload: EventMsgPayload): string | undefined {
 /** A turn that is still being assembled. */
 type MutableTurn = Turn & { lastAgentMessage?: string; userInputFallback?: string };
 
+const TURN_OPENING_EVENTS = new Set(["user_message", "item_completed", "agent_message"]);
+
 function newTurn(startTime: number): MutableTurn {
   return {
     turnId: undefined,
@@ -151,7 +153,13 @@ export function parseSession(lines: RolloutLine[]): {
     turn.finalOutput = turn.lastAgentMessage ?? turn.steps.filter((s) => s.text).at(-1)?.text;
     delete turn.lastAgentMessage;
     delete turn.userInputFallback;
-    turns.push(turn);
+    const isUnannouncedAndEmpty =
+      !turn.turnId &&
+      turn.userInput == null &&
+      turn.finalOutput == null &&
+      turn.steps.length === 0 &&
+      turn.subagentThreadIds.length === 0;
+    if (!isUnannouncedAndEmpty) turns.push(turn);
     turn = null;
     toolCallsById = new Map();
   };
@@ -300,7 +308,8 @@ export function parseSession(lines: RolloutLine[]): {
         continue;
       }
 
-      ensureTurn(ts);
+      if (TURN_OPENING_EVENTS.has(et)) ensureTurn(ts);
+      else if (!turn) continue;
 
       if (et === "user_message" && typeof p.message === "string") {
         if (!turn!.userInput) turn!.userInput = p.message;

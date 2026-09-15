@@ -1,0 +1,14 @@
+{"timestamp":"2026-06-03T13:00:00.000Z","type":"session_meta","payload":{"id":"sess-thread-settings","cli_version":"0.153.4","model_provider":"openai"}}
+{"timestamp":"2026-06-03T13:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-a"}}
+{"timestamp":"2026-06-03T13:00:01.100Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
+{"timestamp":"2026-06-03T13:00:01.200Z","type":"event_msg","payload":{"type":"user_message","message":"What is 1 + 1?"}}
+{"timestamp":"2026-06-03T13:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"1 + 1 = 2."}]}}
+{"timestamp":"2026-06-03T13:00:02.100Z","type":"event_msg","payload":{"type":"agent_message","message":"1 + 1 = 2."}}
+{"timestamp":"2026-06-03T13:00:02.300Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-a"}}
+{"timestamp":"2026-06-03T13:00:02.997Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"gpt-5.4","model_provider_id":"openai","service_tier":"priority","approval_policy":"on-request"}}}
+{"timestamp":"2026-06-03T13:00:03.001Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-b"}}
+{"timestamp":"2026-06-03T13:00:03.100Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
+{"timestamp":"2026-06-03T13:00:03.200Z","type":"event_msg","payload":{"type":"user_message","message":"And 2 + 2?"}}
+{"timestamp":"2026-06-03T13:00:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"2 + 2 = 4."}]}}
+{"timestamp":"2026-06-03T13:00:04.100Z","type":"event_msg","payload":{"type":"agent_message","message":"2 + 2 = 4."}}
+{"timestamp":"2026-06-03T13:00:04.300Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-b"}}
