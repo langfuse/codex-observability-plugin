@@ -189,7 +189,19 @@ The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${s
 - **Traces land in the wrong project** — API keys are project-scoped in Langfuse; use the keys for the project you want.
 - **Testing hook failures** — set `LANGFUSE_CODEX_FAIL_ON_ERROR=true` together with `LANGFUSE_CODEX_DEBUG=true` to make Codex report upload or flush errors instead of failing open.
 - **Checking dedup sidecars** — successful uploads of completed turns are recorded next to the rollout as `<rollout>.jsonl.langfuse`. If a Stop hook reads the rollout before Codex has written the turn-completed marker, the trace may upload without a sidecar entry; the next Stop hook will finalize and mark it.
-- **Verifying in Langfuse** — use `npx langfuse-cli api traces list --from-timestamp <recent ISO> --limit 10 --order-by timestamp.desc --fields core,metrics,observations --json` with credentials for the same project.
+- **Verifying in Langfuse** — confirm the turn landed with bounded Observations API v2 (`GET /api/public/v2/observations`), not GET `/api/public/traces`. Use credentials for the same project:
+
+  ```bash
+  npx @langfuse/cli api observations list \
+    --from-start-time <iso> --limit 10 --json
+  ```
+
+  Add `--trace-id` when checking one turn. The old traces-list recipe is only for self-hosted Langfuse v3, where you must pin the CLI contract:
+
+  ```bash
+  npx @langfuse/cli --api-version 3 api traces list \
+    --from-timestamp <iso> --limit 10 --order-by timestamp.desc --fields core,metrics,observations --json
+  ```
 - **Sandboxed/network-restricted runs** — Codex sandbox or network policy can prevent exports from reaching Langfuse. Debug logging and fail-on-error mode are the quickest way to distinguish hook execution from network failure.
 - **Self-hosting** — the TypeScript SDK requires Langfuse platform version >= 3.95.0.
 
