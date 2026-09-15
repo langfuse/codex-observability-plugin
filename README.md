@@ -188,7 +188,7 @@ The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${s
 - **Authentication fails** — check that the public/secret keys are valid and that `LANGFUSE_BASE_URL` matches the region the keys belong to.
 - **Traces land in the wrong project** — API keys are project-scoped in Langfuse; use the keys for the project you want.
 - **Testing hook failures** — set `LANGFUSE_CODEX_FAIL_ON_ERROR=true` together with `LANGFUSE_CODEX_DEBUG=true` to make Codex report upload or flush errors instead of failing open.
-- **Checking dedup sidecars** — the hook adds a turn ID to `<rollout>.jsonl.langfuse` only after Langfuse receives that turn's trace. A later Stop hook skips turn IDs in this file, and it tries again for a turn that failed to upload.
+- **Checking dedup sidecars** — a turn id is appended to `<rollout>.jsonl.langfuse` only once Langfuse has received that turn. Later Stop hooks skip the ids listed there, and a turn missing from the file is retried.
 - **Verifying in Langfuse** — use `npx langfuse-cli api traces list --from-timestamp <recent ISO> --limit 10 --order-by timestamp.desc --fields core,metrics,observations --json` with credentials for the same project.
 - **Sandboxed/network-restricted runs** — Codex sandbox or network policy can prevent exports from reaching Langfuse. Debug logging and fail-on-error mode are the quickest way to distinguish hook execution from network failure.
 - **Self-hosting** — the TypeScript SDK requires Langfuse platform version >= 3.95.0.
@@ -202,8 +202,9 @@ When enabled, the plugin uploads completed Codex transcript data to Langfuse: pr
 Codex emits a [`Stop` hook](https://developers.openai.com/codex) after each turn, passing the path to the session's rollout transcript on stdin. The plugin:
 
 1. Reads the rollout JSONL and reconstructs each turn (model steps, tool calls, usage, subagents).
-2. Converts them into Langfuse observations with the original timestamps, using the [Langfuse TypeScript SDK](https://langfuse.com/docs/observability/sdk/overview) on top of OpenTelemetry.
-3. Records uploaded turn ids in a sidecar file (`<rollout>.langfuse`) so resuming a session does not re-upload completed turns.
+2. Exports every turn that is final: one whose `task_complete`/`turn_aborted` event is in the rollout, plus the turn the `Stop` payload names in `turn_id`. Codex appends that event only after the hook exits, so the payload is the only signal that the stopped turn is done.
+3. Converts them into Langfuse observations with the original timestamps, using the [Langfuse TypeScript SDK](https://langfuse.com/docs/observability/sdk/overview) on top of OpenTelemetry.
+4. Records delivered turn ids in a sidecar file (`<rollout>.langfuse`) after the exporter flushes, so each turn is uploaded exactly once and a failed export stays retryable.
 
 The hook fails open: any tracing error is logged and swallowed so it never blocks your Codex session.
 
