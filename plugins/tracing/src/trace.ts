@@ -333,69 +333,82 @@ async function emitTurn(
     },
   );
 
-  let previousToolResults: unknown = undefined;
+  let failure: unknown;
+  try {
+    let previousToolResults: unknown = undefined;
 
-  for (let i = 0; i < turn.steps.length; i++) {
-    const step = turn.steps[i];
-    const generation = startObservation(
-      isSubagent ? "LLM Subagent" : "LLM",
-      {
-        input:
-          i === 0
-            ? turn.userInput != null
-              ? clip(turn.userInput)
-              : undefined
-            : previousToolResults,
-        output: buildGenerationOutput(step, clip),
-        model: turn.model,
-        usageDetails: toUsageDetails(step.usage),
-        metadata: { "codex.step_index": i },
-      },
-      {
-        asType: "generation",
-        startTime: new Date(step.startTime),
-        parentSpanContext: root.otelSpan.spanContext(),
-      },
-    );
+    for (let i = 0; i < turn.steps.length; i++) {
+      const step = turn.steps[i];
+      const generation = startObservation(
+        isSubagent ? "LLM Subagent" : "LLM",
+        {
+          input:
+            i === 0
+              ? turn.userInput != null
+                ? clip(turn.userInput)
+                : undefined
+              : previousToolResults,
+          output: buildGenerationOutput(step, clip),
+          model: turn.model,
+          usageDetails: toUsageDetails(step.usage),
+          metadata: { "codex.step_index": i },
+        },
+        {
+          asType: "generation",
+          startTime: new Date(step.startTime),
+          parentSpanContext: root.otelSpan.spanContext(),
+        },
+      );
 
-    for (const tc of step.toolCalls) {
-      emitToolCall(tc, generation, clip, step.endTime);
+      for (const tc of step.toolCalls) {
+        emitToolCall(tc, generation, clip, step.endTime);
+      }
+
+      generation.end(new Date(step.endTime));
+
+      previousToolResults =
+        step.toolCalls.length > 0
+          ? step.toolCalls.map((tc) => ({
+              name: tc.name,
+              output: tc.output != null ? clip(toText(tc.output)) : undefined,
+              ...(tc.error ? { error: clip(tc.error) } : {}),
+            }))
+          : undefined;
     }
 
-    generation.end(new Date(step.endTime));
-
-    previousToolResults =
-      step.toolCalls.length > 0
-        ? step.toolCalls.map((tc) => ({
-            name: tc.name,
-            output: tc.output != null ? clip(toText(tc.output)) : undefined,
-            ...(tc.error ? { error: clip(tc.error) } : {}),
-          }))
-        : undefined;
-  }
-
-  // Subagent threads spawned by this turn are nested under the turn root.
-  const announced: SubagentRollout[] = [];
-  for (const threadId of turn.subagentThreadIds) {
-    const rollout = ctx.subagentIndex.byThread.get(threadId);
-    if (!rollout) {
-      debugLog(`subagent rollout not found for thread ${threadId}`);
-      continue;
+    // Subagent threads spawned by this turn are nested under the turn root.
+    const announced: SubagentRollout[] = [];
+    for (const threadId of turn.subagentThreadIds) {
+      const rollout = ctx.subagentIndex.byThread.get(threadId);
+      if (!rollout) {
+        debugLog(`subagent rollout not found for thread ${threadId}`);
+        continue;
+      }
+      announced.push(rollout);
     }
-    announced.push(rollout);
-  }
-  for (const sub of [...announced, ...(ctx.unannouncedSubagents ?? [])]) {
-    if (ctx.seenThreadIds.has(sub.threadId)) continue;
-    ctx.seenThreadIds.add(sub.threadId);
-    await convertRollout(sub.file, {
-      config: ctx.config,
-      parentObservation: root,
-      subagentIndex: ctx.subagentIndex,
-      seenThreadIds: ctx.seenThreadIds,
+    for (const sub of [...announced, ...(ctx.unannouncedSubagents ?? [])]) {
+      if (ctx.seenThreadIds.has(sub.threadId)) continue;
+      ctx.seenThreadIds.add(sub.threadId);
+      await convertRollout(sub.file, {
+        config: ctx.config,
+        parentObservation: root,
+        subagentIndex: ctx.subagentIndex,
+        seenThreadIds: ctx.seenThreadIds,
+      });
+    }
+  } catch (error) {
+    failure = error;
+    debugLog(`failed to convert turn ${turn.turnId ?? "(no turn id)"}:`, error);
+    root.update({
+      level: "ERROR",
+      statusMessage: clip(
+        `Trace conversion failed: ${error instanceof Error ? error.message : String(error)}`,
+      ),
     });
   }
 
   root.end(new Date(turn.endTime));
+  if (failure && ctx.config.fail_on_error) throw failure;
 }
 
 function emitToolCall(
