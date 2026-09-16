@@ -211,7 +211,7 @@ When enabled, the plugin uploads completed Codex transcript data to Langfuse: pr
 Codex emits a [`Stop` hook](https://developers.openai.com/codex) after each turn, passing the path to the session's rollout transcript on stdin. The plugin:
 
 1. Reads the rollout JSONL and reconstructs each turn (model steps, tool calls, usage, subagents).
-2. Exports every turn that is final: one whose `task_complete`/`turn_aborted` event is in the rollout, plus the turn the `Stop` payload names in `turn_id`. Codex appends that event only after the hook exits, so the payload is the only signal that the stopped turn is done.
+2. Exports every turn with a `turn_id` that is final: its `task_complete`/`turn_aborted` event is in the rollout, a later turn has started, or the `Stop` payload names it in `turn_id`. Codex appends that event only after the hook exits, so the payload is the only signal that the stopped turn is done. Fragments Codex writes between turns carry no `turn_id` and are never exported.
 3. Converts them into Langfuse observations with the original timestamps, using the [Langfuse TypeScript SDK](https://langfuse.com/docs/observability/sdk/overview) on top of OpenTelemetry.
 4. Records delivered turn ids in a sidecar file (`<rollout>.langfuse`) after the exporter flushes, so each turn is uploaded exactly once and a failed export stays retryable.
 

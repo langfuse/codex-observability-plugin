@@ -580,3 +580,60 @@ describe("Stop hook turn lifecycle", () => {
     expect(sidecarIds(file)).toEqual(["turn-1", "turn-2"]);
   });
 });
+
+describe("turn finality", () => {
+  it("exports a superseded turn that never completed, and skips id-less fragments", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-superseded.jsonl");
+    const line = (ts: string, type: string, payload: Record<string, unknown>) =>
+      JSON.stringify({ timestamp: ts, type, payload });
+    fs.writeFileSync(
+      file,
+      [
+        line("2026-06-03T14:00:00.000Z", "session_meta", { id: "sess-s" }),
+        line("2026-06-03T14:00:01.000Z", "event_msg", { type: "task_started", turn_id: "turn-1" }),
+        line("2026-06-03T14:00:01.100Z", "event_msg", { type: "user_message", message: "erste" }),
+        line("2026-06-03T14:00:02.000Z", "event_msg", { type: "agent_message", message: "ok" }),
+        line("2026-06-03T14:00:02.100Z", "event_msg", { type: "task_complete", turn_id: "turn-1" }),
+        // Between turns Codex injects a subagent notification and a settings
+        // event; neither carries a turn_id.
+        line("2026-06-03T14:00:30.000Z", "response_item", {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "<subagent_notification>done</subagent_notification>" },
+          ],
+        }),
+        line("2026-06-03T14:00:31.000Z", "event_msg", { type: "thread_settings_applied" }),
+        // turn-2: the user asked, Codex never wrote task_complete or turn_aborted.
+        line("2026-06-03T14:01:00.000Z", "event_msg", { type: "task_started", turn_id: "turn-2" }),
+        line("2026-06-03T14:01:00.100Z", "event_msg", {
+          type: "user_message",
+          message: "klappt es?",
+        }),
+        line("2026-06-03T14:02:00.000Z", "event_msg", { type: "task_started", turn_id: "turn-3" }),
+        line("2026-06-03T14:02:00.100Z", "event_msg", {
+          type: "user_message",
+          message: "und jetzt?",
+        }),
+        line("2026-06-03T14:02:01.000Z", "event_msg", { type: "agent_message", message: "ja." }),
+        line("2026-06-03T14:02:01.100Z", "event_msg", { type: "task_complete", turn_id: "turn-3" }),
+      ].join("\n") + "\n",
+    );
+
+    const exported = await convertAndMark(file, { config: baseConfig });
+
+    expect(exported).toEqual(["turn-1", "turn-2", "turn-3"]);
+    const roots = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "Codex Turn")
+      .sort((a, b) => startMs(a) - startMs(b))
+      .map((s) => attr(s, "langfuse.observation.metadata.codex.turn_id"));
+    expect(roots).toEqual(["turn-1", "turn-2", "turn-3"]);
+    expect(fs.readFileSync(`${file}.langfuse`, "utf-8").trim().split("\n")).toEqual([
+      "turn-1",
+      "turn-2",
+      "turn-3",
+    ]);
+  });
+});

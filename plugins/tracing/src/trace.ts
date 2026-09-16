@@ -436,17 +436,22 @@ function emitToolCall(
 }
 
 /**
- * Whether a turn is done growing and can be exported.
+ * Whether a turn is done growing and can be exported exactly once.
  *
- * Codex runs the `Stop` hook and appends `task_complete` only after it exits,
- * so the turn that just stopped is always still open on disk — `turn_id` from
- * the payload is the only signal that it is done. Waiting for the event alone
- * would defer that turn to the next invocation, which for a session's last turn
- * never comes; exporting every open turn duplicates it instead.
+ * Only turns Codex gave a `turn_id` qualify: everything else is plumbing that
+ * Codex writes between turns (`thread_settings_applied`, injected subagent
+ * notifications) and could never be recorded in the sidecar. Such a turn is
+ * final once its completion event is on disk, once a later turn has started, or
+ * when the `Stop` payload names it — Codex appends `task_complete` only after
+ * the hook exits, so the turn that just stopped is always still open on disk.
  */
-function isFinal(turn: Turn, stoppedTurnId: string | undefined): boolean {
-  if (turn.completed) return true;
-  return turn.turnId != null && turn.turnId === stoppedTurnId;
+function isFinal(
+  turn: Turn,
+  stoppedTurnId: string | undefined,
+  supersededByLaterTurn: boolean,
+): turn is Turn & { turnId: string } {
+  if (turn.turnId == null) return false;
+  return turn.completed || supersededByLaterTurn || turn.turnId === stoppedTurnId;
 }
 
 /**
@@ -514,11 +519,11 @@ export async function convertRollout(
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
 
-    if (!isFinal(turn, options.stoppedTurnId)) {
-      debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: still open`);
+    if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
+      debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
       continue;
     }
-    if (turn.turnId && uploaded.has(turn.turnId)) {
+    if (uploaded.has(turn.turnId)) {
       continue; // already delivered by a previous hook invocation
     }
 
@@ -546,10 +551,8 @@ export async function convertRollout(
       },
     );
 
-    if (turn.turnId) {
-      uploaded.add(turn.turnId);
-      exportedTurnIds.push(turn.turnId);
-    }
+    uploaded.add(turn.turnId);
+    exportedTurnIds.push(turn.turnId);
   }
 
   return exportedTurnIds;
