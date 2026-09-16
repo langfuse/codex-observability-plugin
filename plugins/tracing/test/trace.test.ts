@@ -345,6 +345,21 @@ describe("convertRollout", () => {
     expect(attr(shell, "langfuse.observation.output")).toContain("clean");
   });
 
+  it("does not re-export a settings event between turns on every invocation", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-thread-settings-main.jsonl");
+
+    await convertRollout(file, { config: baseConfig });
+    const roots = exporter.getFinishedSpans().filter((s) => s.name === "Codex Turn");
+    expect(roots.map((s) => attr(s, "langfuse.observation.metadata.codex.turn_id")).sort()).toEqual(
+      ["turn-a", "turn-b"],
+    );
+
+    exporter.reset();
+    await convertRollout(file, { config: baseConfig });
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+  });
+
   it("skips turns already recorded in the sidecar (dedup)", async () => {
     const dir = stageFixtures();
     const file = path.join(dir, "rollout-basic-main.jsonl");
@@ -458,6 +473,18 @@ describe("deterministic trace ids (trace_seed)", () => {
     exporter.reset();
     await convertAndMark(file, { config: seededConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
+  });
+
+  it("does not let a settings event between turns consume a turn number", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-thread-settings-main.jsonl"), {
+      config: seededConfig,
+    });
+
+    const roots = turnRoots();
+    expect(roots).toHaveLength(2);
+    expect(roots[0].spanContext().traceId).toBe(seededTraceId(`${seed}:1`));
+    expect(roots[1].spanContext().traceId).toBe(seededTraceId(`${seed}:2`));
   });
 
   it("numbers turns over the full rollout even when earlier turns are deduped", async () => {
