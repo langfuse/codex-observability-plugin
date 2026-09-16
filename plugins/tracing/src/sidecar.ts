@@ -1,13 +1,9 @@
 import * as fs from "node:fs/promises";
 
 /**
- * Per-rollout dedup ledger.
- *
- * The `Stop` hook fires after every Codex turn and re-reads the whole rollout
- * file, so completed turns would be re-uploaded each time. We record uploaded
- * turn ids in a sidecar file (`<rolloutFile>.langfuse`) and skip them on
- * subsequent invocations. In-progress (not-yet-completed) turns are uploaded
- * but intentionally not recorded, so they finalize on the next hook run.
+ * The `Stop` hook reads the rollout file again after each Codex turn.
+ * The sidecar file (`<rolloutFile>.langfuse`) holds the ids of the sent turns.
+ * The hook adds an id only after a flush. Retry a turn that has no id.
  */
 export async function loadUploadedTurnIds(rolloutFile: string): Promise<Set<string>> {
   try {

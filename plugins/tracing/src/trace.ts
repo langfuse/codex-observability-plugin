@@ -13,7 +13,7 @@ import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
 import { parseArgs, parseSession } from "./parse.js";
-import { loadUploadedTurnIds, markTurnUploaded } from "./sidecar.js";
+import { loadUploadedTurnIds } from "./sidecar.js";
 import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
 import { debugLog, toText, truncate } from "./utils.js";
 
@@ -333,69 +333,82 @@ async function emitTurn(
     },
   );
 
-  let previousToolResults: unknown = undefined;
+  let failure: unknown;
+  try {
+    let previousToolResults: unknown = undefined;
 
-  for (let i = 0; i < turn.steps.length; i++) {
-    const step = turn.steps[i];
-    const generation = startObservation(
-      isSubagent ? "LLM Subagent" : "LLM",
-      {
-        input:
-          i === 0
-            ? turn.userInput != null
-              ? clip(turn.userInput)
-              : undefined
-            : previousToolResults,
-        output: buildGenerationOutput(step, clip),
-        model: turn.model,
-        usageDetails: toUsageDetails(step.usage),
-        metadata: { "codex.step_index": i },
-      },
-      {
-        asType: "generation",
-        startTime: new Date(step.startTime),
-        parentSpanContext: root.otelSpan.spanContext(),
-      },
-    );
+    for (let i = 0; i < turn.steps.length; i++) {
+      const step = turn.steps[i];
+      const generation = startObservation(
+        isSubagent ? "LLM Subagent" : "LLM",
+        {
+          input:
+            i === 0
+              ? turn.userInput != null
+                ? clip(turn.userInput)
+                : undefined
+              : previousToolResults,
+          output: buildGenerationOutput(step, clip),
+          model: turn.model,
+          usageDetails: toUsageDetails(step.usage),
+          metadata: { "codex.step_index": i },
+        },
+        {
+          asType: "generation",
+          startTime: new Date(step.startTime),
+          parentSpanContext: root.otelSpan.spanContext(),
+        },
+      );
 
-    for (const tc of step.toolCalls) {
-      emitToolCall(tc, generation, clip, step.endTime);
+      for (const tc of step.toolCalls) {
+        emitToolCall(tc, generation, clip, step.endTime);
+      }
+
+      generation.end(new Date(step.endTime));
+
+      previousToolResults =
+        step.toolCalls.length > 0
+          ? step.toolCalls.map((tc) => ({
+              name: tc.name,
+              output: tc.output != null ? clip(toText(tc.output)) : undefined,
+              ...(tc.error ? { error: clip(tc.error) } : {}),
+            }))
+          : undefined;
     }
 
-    generation.end(new Date(step.endTime));
-
-    previousToolResults =
-      step.toolCalls.length > 0
-        ? step.toolCalls.map((tc) => ({
-            name: tc.name,
-            output: tc.output != null ? clip(toText(tc.output)) : undefined,
-            ...(tc.error ? { error: clip(tc.error) } : {}),
-          }))
-        : undefined;
-  }
-
-  // Subagent threads spawned by this turn are nested under the turn root.
-  const announced: SubagentRollout[] = [];
-  for (const threadId of turn.subagentThreadIds) {
-    const rollout = ctx.subagentIndex.byThread.get(threadId);
-    if (!rollout) {
-      debugLog(`subagent rollout not found for thread ${threadId}`);
-      continue;
+    // Subagent threads spawned by this turn are nested under the turn root.
+    const announced: SubagentRollout[] = [];
+    for (const threadId of turn.subagentThreadIds) {
+      const rollout = ctx.subagentIndex.byThread.get(threadId);
+      if (!rollout) {
+        debugLog(`subagent rollout not found for thread ${threadId}`);
+        continue;
+      }
+      announced.push(rollout);
     }
-    announced.push(rollout);
-  }
-  for (const sub of [...announced, ...(ctx.unannouncedSubagents ?? [])]) {
-    if (ctx.seenThreadIds.has(sub.threadId)) continue;
-    ctx.seenThreadIds.add(sub.threadId);
-    await convertRollout(sub.file, {
-      config: ctx.config,
-      parentObservation: root,
-      subagentIndex: ctx.subagentIndex,
-      seenThreadIds: ctx.seenThreadIds,
+    for (const sub of [...announced, ...(ctx.unannouncedSubagents ?? [])]) {
+      if (ctx.seenThreadIds.has(sub.threadId)) continue;
+      ctx.seenThreadIds.add(sub.threadId);
+      await convertRollout(sub.file, {
+        config: ctx.config,
+        parentObservation: root,
+        subagentIndex: ctx.subagentIndex,
+        seenThreadIds: ctx.seenThreadIds,
+      });
+    }
+  } catch (error) {
+    failure = error;
+    debugLog(`failed to convert turn ${turn.turnId ?? "(no turn id)"}:`, error);
+    root.update({
+      level: "ERROR",
+      statusMessage: clip(
+        `Trace conversion failed: ${error instanceof Error ? error.message : String(error)}`,
+      ),
     });
   }
 
   root.end(new Date(turn.endTime));
+  if (failure && ctx.config.fail_on_error) throw failure;
 }
 
 function emitToolCall(
@@ -423,11 +436,33 @@ function emitToolCall(
 }
 
 /**
+ * Whether a turn is done growing and can be exported exactly once.
+ *
+ * Only turns Codex gave a `turn_id` qualify: everything else is plumbing that
+ * Codex writes between turns (`thread_settings_applied`, injected subagent
+ * notifications) and could never be recorded in the sidecar. Such a turn is
+ * final once its completion event is on disk, once a later turn has started, or
+ * when the `Stop` payload names it — Codex appends `task_complete` only after
+ * the hook exits, so the turn that just stopped is always still open on disk.
+ */
+function isFinal(
+  turn: Turn,
+  stoppedTurnId: string | undefined,
+  supersededByLaterTurn: boolean,
+): turn is Turn & { turnId: string } {
+  if (turn.turnId == null) return false;
+  return turn.completed || supersededByLaterTurn || turn.turnId === stoppedTurnId;
+}
+
+/**
  * Convert a Codex rollout file into Langfuse traces.
  *
  * Top-level turns each become their own trace (grouped into a Langfuse session
  * via the Codex thread id). Subagent rollouts are nested under the spawning
  * turn via `parentObservation`.
+ *
+ * Returns the ids of the top-level turns that were emitted, for the caller to
+ * record in the sidecar once the exporter has flushed.
  */
 export async function convertRollout(
   rolloutFile: string,
@@ -436,8 +471,9 @@ export async function convertRollout(
     parentObservation?: LangfuseObservation;
     subagentIndex?: SubagentIndex;
     seenThreadIds?: Set<string>;
+    stoppedTurnId?: string;
   },
-): Promise<void> {
+): Promise<string[]> {
   const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
   debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 
@@ -474,15 +510,21 @@ export async function convertRollout(
         unannouncedSubagents: byTurn.get(turnIndex),
       });
     }
-    return;
+    return [];
   }
 
   const uploaded = await loadUploadedTurnIds(rolloutFile);
+  const exportedTurnIds: string[] = [];
 
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
-    if (turn.completed && turn.turnId && uploaded.has(turn.turnId)) {
-      continue; // already uploaded in a previous hook invocation
+
+    if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
+      debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
+      continue;
+    }
+    if (uploaded.has(turn.turnId)) {
+      continue; // already delivered by a previous hook invocation
     }
 
     // Turn numbering stays 1-based over the full rollout (including turns
@@ -509,15 +551,9 @@ export async function convertRollout(
       },
     );
 
-    // Only mark completed turns as uploaded; an in-progress trailing turn is
-    // re-uploaded (and finalized) on the next hook invocation.
-    if (turn.completed && turn.turnId) {
-      uploaded.add(turn.turnId);
-      await markTurnUploaded(rolloutFile, turn.turnId);
-    } else if (turn.turnId) {
-      debugLog(
-        `uploaded in-progress turn ${turn.turnId}; waiting for completion before sidecar mark`,
-      );
-    }
+    uploaded.add(turn.turnId);
+    exportedTurnIds.push(turn.turnId);
   }
+
+  return exportedTurnIds;
 }

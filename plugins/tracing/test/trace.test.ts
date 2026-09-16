@@ -13,6 +13,7 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { Config } from "../src/config.js";
+import { markTurnUploaded } from "../src/sidecar.js";
 import { buildSubagentIndex, convertRollout } from "../src/trace.js";
 
 const exporter = new InMemorySpanExporter();
@@ -51,6 +52,15 @@ const startMs = (span: ReadableSpan): number => span.startTime[0] * 1000 + span.
 const parentId = (span: ReadableSpan): string | undefined =>
   (span as unknown as { parentSpanContext?: { spanId?: string } }).parentSpanContext?.spanId ??
   (span as unknown as { parentSpanId?: string }).parentSpanId;
+
+async function convertAndMark(
+  file: string,
+  options: { config: Config; stoppedTurnId?: string },
+): Promise<string[]> {
+  const exported = await convertRollout(file, options);
+  for (const turnId of exported) await markTurnUploaded(file, turnId);
+  return exported;
+}
 
 beforeAll(() => {
   provider = new NodeTracerProvider({
@@ -339,13 +349,13 @@ describe("convertRollout", () => {
     const dir = stageFixtures();
     const file = path.join(dir, "rollout-basic-main.jsonl");
 
-    await convertRollout(file, { config: baseConfig });
+    await convertAndMark(file, { config: baseConfig });
     const firstCount = exporter.getFinishedSpans().length;
     expect(firstCount).toBeGreaterThan(0);
     expect(fs.existsSync(`${file}.langfuse`)).toBe(true);
 
     exporter.reset();
-    await convertRollout(file, { config: baseConfig });
+    await convertAndMark(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
 });
@@ -441,12 +451,12 @@ describe("deterministic trace ids (trace_seed)", () => {
     const dir = stageFixtures();
     const file = path.join(dir, "rollout-two-turns-main.jsonl");
 
-    await convertRollout(file, { config: seededConfig });
+    await convertAndMark(file, { config: seededConfig });
     expect(turnRoots()).toHaveLength(2);
     expect(fs.existsSync(`${file}.langfuse`)).toBe(true);
 
     exporter.reset();
-    await convertRollout(file, { config: seededConfig });
+    await convertAndMark(file, { config: seededConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
 
@@ -461,5 +471,169 @@ describe("deterministic trace ids (trace_seed)", () => {
     const roots = turnRoots();
     expect(roots).toHaveLength(1);
     expect(roots[0].spanContext().traceId).toBe(seededTraceId(`${seed}:2`));
+  });
+});
+
+describe("Stop hook turn lifecycle", () => {
+  const exportedTurnIds = (): string[] =>
+    exporter
+      .getFinishedSpans()
+      .filter((span) => span.name === "Codex Turn")
+      .sort((a, b) => startMs(a) - startMs(b))
+      .map((span) => attr(span, "langfuse.observation.metadata.codex.turn_id"));
+
+  const sidecarIds = (file: string): string[] =>
+    fs.existsSync(`${file}.langfuse`)
+      ? fs.readFileSync(`${file}.langfuse`, "utf-8").split("\n").filter(Boolean)
+      : [];
+
+  const writeProgress = (file: string, lines: string[], lineCount: number): void =>
+    fs.writeFileSync(file, `${lines.slice(0, lineCount).join("\n")}\n`);
+
+  it("exports each turn exactly once over a full hook sequence", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-two-turns-main.jsonl");
+    const lines = fs.readFileSync(file, "utf-8").trimEnd().split("\n");
+    const completeA = lines.findIndex((line) => line.includes('"task_complete"'));
+
+    writeProgress(file, lines, completeA);
+    await convertAndMark(file, { config: baseConfig, stoppedTurnId: "turn-a" });
+    expect(exportedTurnIds()).toEqual(["turn-a"]);
+    expect(sidecarIds(file)).toEqual(["turn-a"]);
+
+    exporter.reset();
+    writeProgress(file, lines, lines.length - 1);
+    await convertAndMark(file, { config: baseConfig, stoppedTurnId: "turn-b" });
+    expect(exportedTurnIds()).toEqual(["turn-b"]);
+    expect(sidecarIds(file)).toEqual(["turn-a", "turn-b"]);
+
+    exporter.reset();
+    writeProgress(file, lines, lines.length);
+    await convertAndMark(file, { config: baseConfig, stoppedTurnId: "turn-b" });
+    expect(exportedTurnIds()).toEqual([]);
+    expect(sidecarIds(file)).toEqual(["turn-a", "turn-b"]);
+  });
+
+  it("never exports the empty fragments between turns", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-fragments.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        { timestamp: "2026-06-03T13:00:00.000Z", type: "session_meta", payload: { id: "sess-f" } },
+        {
+          timestamp: "2026-06-03T13:00:01.000Z",
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "turn-1" },
+        },
+        {
+          timestamp: "2026-06-03T13:00:01.100Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "first" },
+        },
+        {
+          timestamp: "2026-06-03T13:00:02.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "done" }],
+          },
+        },
+        {
+          timestamp: "2026-06-03T13:00:02.100Z",
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-1" },
+        },
+        {
+          timestamp: "2026-06-03T13:00:10.000Z",
+          type: "event_msg",
+          payload: { type: "thread_settings_applied" },
+        },
+        {
+          timestamp: "2026-06-03T13:00:10.100Z",
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "turn-2" },
+        },
+        {
+          timestamp: "2026-06-03T13:00:11.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "also done" }],
+          },
+        },
+        {
+          timestamp: "2026-06-03T13:00:11.100Z",
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-2" },
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n") + "\n",
+    );
+
+    await convertAndMark(file, { config: baseConfig, stoppedTurnId: undefined });
+
+    expect(exportedTurnIds()).toEqual(["turn-1", "turn-2"]);
+    expect(sidecarIds(file)).toEqual(["turn-1", "turn-2"]);
+  });
+});
+
+describe("turn finality", () => {
+  it("exports a superseded turn that never completed, and skips id-less fragments", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-superseded.jsonl");
+    const line = (ts: string, type: string, payload: Record<string, unknown>) =>
+      JSON.stringify({ timestamp: ts, type, payload });
+    fs.writeFileSync(
+      file,
+      [
+        line("2026-06-03T14:00:00.000Z", "session_meta", { id: "sess-s" }),
+        line("2026-06-03T14:00:01.000Z", "event_msg", { type: "task_started", turn_id: "turn-1" }),
+        line("2026-06-03T14:00:01.100Z", "event_msg", { type: "user_message", message: "erste" }),
+        line("2026-06-03T14:00:02.000Z", "event_msg", { type: "agent_message", message: "ok" }),
+        line("2026-06-03T14:00:02.100Z", "event_msg", { type: "task_complete", turn_id: "turn-1" }),
+        // Between turns Codex injects a subagent notification and a settings
+        // event; neither carries a turn_id.
+        line("2026-06-03T14:00:30.000Z", "response_item", {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "<subagent_notification>done</subagent_notification>" },
+          ],
+        }),
+        line("2026-06-03T14:00:31.000Z", "event_msg", { type: "thread_settings_applied" }),
+        // turn-2: the user asked, Codex never wrote task_complete or turn_aborted.
+        line("2026-06-03T14:01:00.000Z", "event_msg", { type: "task_started", turn_id: "turn-2" }),
+        line("2026-06-03T14:01:00.100Z", "event_msg", {
+          type: "user_message",
+          message: "klappt es?",
+        }),
+        line("2026-06-03T14:02:00.000Z", "event_msg", { type: "task_started", turn_id: "turn-3" }),
+        line("2026-06-03T14:02:00.100Z", "event_msg", {
+          type: "user_message",
+          message: "und jetzt?",
+        }),
+        line("2026-06-03T14:02:01.000Z", "event_msg", { type: "agent_message", message: "ja." }),
+        line("2026-06-03T14:02:01.100Z", "event_msg", { type: "task_complete", turn_id: "turn-3" }),
+      ].join("\n") + "\n",
+    );
+
+    const exported = await convertAndMark(file, { config: baseConfig });
+
+    expect(exported).toEqual(["turn-1", "turn-2", "turn-3"]);
+    const roots = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "Codex Turn")
+      .sort((a, b) => startMs(a) - startMs(b))
+      .map((s) => attr(s, "langfuse.observation.metadata.codex.turn_id"));
+    expect(roots).toEqual(["turn-1", "turn-2", "turn-3"]);
+    expect(fs.readFileSync(`${file}.langfuse`, "utf-8").trim().split("\n")).toEqual([
+      "turn-1",
+      "turn-2",
+      "turn-3",
+    ]);
   });
 });
