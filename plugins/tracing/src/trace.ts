@@ -296,6 +296,7 @@ async function emitTurn(
     config: Config;
     rolloutFile: string;
     parentObservation?: LangfuseObservation;
+    ancestorTurnIds?: ReadonlySet<string>;
     /** Pre-derived trace id for top-level turns (see seededTraceParent). */
     seededParent?: SpanContext;
     subagentIndex: SubagentIndex;
@@ -376,6 +377,8 @@ async function emitTurn(
           : undefined;
     }
 
+    const ancestorTurnIds = new Set(ctx.ancestorTurnIds);
+    if (turn.turnId) ancestorTurnIds.add(turn.turnId);
     // Subagent threads spawned by this turn are nested under the turn root.
     const announced: SubagentRollout[] = [];
     for (const threadId of turn.subagentThreadIds) {
@@ -394,6 +397,7 @@ async function emitTurn(
         parentObservation: root,
         subagentIndex: ctx.subagentIndex,
         seenThreadIds: ctx.seenThreadIds,
+        ancestorTurnIds,
       });
     }
   } catch (error) {
@@ -471,6 +475,7 @@ export async function convertRollout(
     parentObservation?: LangfuseObservation;
     subagentIndex?: SubagentIndex;
     seenThreadIds?: Set<string>;
+    ancestorTurnIds?: ReadonlySet<string>;
     stoppedTurnId?: string;
   },
 ): Promise<string[]> {
@@ -498,13 +503,23 @@ export async function convertRollout(
     byTurn.set(i, [...(byTurn.get(i) ?? []), sub]);
   }
 
+  // Descendants can inherit any turn in this rollout, including already-uploaded turns.
+  const currentLevelTurnIds = new Set(options.ancestorTurnIds);
+  for (const turn of turns) {
+    if (turn.turnId) currentLevelTurnIds.add(turn.turnId);
+  }
+
   // Subagent rollout: nest everything under the parent turn, no dedup/session wrapping.
   if (options.parentObservation) {
     for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
-      await emitTurn(turns[turnIndex], sessionMeta, {
+      const turn = turns[turnIndex];
+      // Skip inherited copies of ancestor turns.
+      if (turn.turnId && options.ancestorTurnIds?.has(turn.turnId)) continue;
+      await emitTurn(turn, sessionMeta, {
         config: options.config,
         rolloutFile,
         parentObservation: options.parentObservation,
+        ancestorTurnIds: currentLevelTurnIds,
         subagentIndex,
         seenThreadIds,
         unannouncedSubagents: byTurn.get(turnIndex),
@@ -543,6 +558,7 @@ export async function convertRollout(
         await emitTurn(turn, sessionMeta, {
           config: options.config,
           rolloutFile,
+          ancestorTurnIds: currentLevelTurnIds,
           seededParent,
           subagentIndex,
           seenThreadIds,

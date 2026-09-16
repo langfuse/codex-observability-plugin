@@ -326,6 +326,24 @@ describe("convertRollout", () => {
     expect(spans.filter((s) => s.name === "LLM Subagent")).toHaveLength(1);
   });
 
+  it("skips inherited turns from every level of the spawning chain", async () => {
+    const dir = stageFixtures();
+    const threadIds = ["ancestor-main", "nested-probe", "nested-leaf"];
+    await convertRollout(path.join(dir, `rollout-${threadIds[0]}.jsonl`), { config: baseConfig });
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans).toHaveLength(4);
+
+    for (const span of spans) {
+      const threadId = span?.attributes?.["langfuse.observation.metadata.codex.thread_id"];
+      const turnId = span?.attributes?.["langfuse.observation.metadata.codex.turn_id"];
+
+      expect(threadId).toBeDefined();
+      // Only this thread's own turn IDs are emitted, despite inherited turns in the rollouts.
+      expect(turnId).toMatch(new RegExp(`^turn-${threadId}`));
+    }
+  });
+
   it("captures web search, local shell, and MCP tool calls with specific names", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-tools-main.jsonl"), { config: baseConfig });
@@ -349,14 +367,14 @@ describe("convertRollout", () => {
     const dir = stageFixtures();
     const file = path.join(dir, "rollout-thread-settings-main.jsonl");
 
-    await convertRollout(file, { config: baseConfig });
+    await convertAndMark(file, { config: baseConfig });
     const roots = exporter.getFinishedSpans().filter((s) => s.name === "Codex Turn");
     expect(roots.map((s) => attr(s, "langfuse.observation.metadata.codex.turn_id")).sort()).toEqual(
       ["turn-a", "turn-b"],
     );
 
     exporter.reset();
-    await convertRollout(file, { config: baseConfig });
+    await convertAndMark(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
 
