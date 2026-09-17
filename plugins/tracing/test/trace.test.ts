@@ -349,14 +349,14 @@ describe("convertRollout", () => {
     const dir = stageFixtures();
     const file = path.join(dir, "rollout-thread-settings-main.jsonl");
 
-    await convertRollout(file, { config: baseConfig });
+    await convertAndMark(file, { config: baseConfig });
     const roots = exporter.getFinishedSpans().filter((s) => s.name === "Codex Turn");
     expect(roots.map((s) => attr(s, "langfuse.observation.metadata.codex.turn_id")).sort()).toEqual(
       ["turn-a", "turn-b"],
     );
 
     exporter.reset();
-    await convertRollout(file, { config: baseConfig });
+    await convertAndMark(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
 
