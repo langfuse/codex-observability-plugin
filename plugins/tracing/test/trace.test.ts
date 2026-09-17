@@ -664,3 +664,66 @@ describe("turn finality", () => {
     ]);
   });
 });
+
+describe("nested parent identity", () => {
+  it.each([false, true])(
+    "recovers nested metadata with matching legacy field: %s",
+    async (legacy) => {
+      const dir = stageFixtures();
+      const file = path.join(dir, "rollout-child-thread-orphan.jsonl");
+      const lines = fs
+        .readFileSync(file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      lines[0].payload = {
+        id: "thread-orphan",
+        cli_version: "0.154.0",
+        ...(legacy ? { parent_thread_id: "sess-orphan" } : {}),
+        source: {
+          subagent: {
+            thread_spawn: { parent_thread_id: "sess-orphan", agent_path: "/root/helper" },
+          },
+        },
+      };
+      fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+      const index = await buildSubagentIndex(file);
+      expect(index.byParent.get("sess-orphan")?.map((child) => child.threadId)).toEqual([
+        "thread-orphan",
+      ]);
+      await convertRollout(path.join(dir, "rollout-orphan-main.jsonl"), { config: baseConfig });
+      const spans = exporter.getFinishedSpans();
+      const children = spans.filter((span) => span.name === "Codex Subagent Turn");
+      expect(children).toHaveLength(1);
+      const parent = spans.find((span) => span.spanContext().spanId === parentId(children[0]));
+      expect(attr(parent!, "langfuse.observation.metadata.codex.turn_id")).toBe("turn-orphan-2");
+      const generations = spans.filter(
+        (span) =>
+          obsType(span) === "generation" && parentId(span) === children[0].spanContext().spanId,
+      );
+      expect(generations).toHaveLength(1);
+      expect(attr(generations[0], "langfuse.observation.model.name")).toBe("gpt-5.6-sol");
+    },
+  );
+
+  it("does not index conflicting parent identities", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-conflict.jsonl");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        timestamp: "2026-06-03T15:00:12.000Z",
+        type: "session_meta",
+        payload: {
+          id: "conflict",
+          parent_thread_id: "first",
+          source: { subagent: { thread_spawn: { parent_thread_id: "second" } } },
+        },
+      }) + "\n",
+    );
+    const index = await buildSubagentIndex(file);
+    expect(index.byThread.has("conflict")).toBe(false);
+    expect(index.byParent.has("first")).toBe(false);
+    expect(index.byParent.has("second")).toBe(false);
+  });
+});

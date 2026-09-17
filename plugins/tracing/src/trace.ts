@@ -12,6 +12,7 @@ import {
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
+import { childIdentity } from "./identity.js";
 import { parseArgs, parseSession } from "./parse.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
 import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
@@ -66,11 +67,13 @@ async function readSessionMeta(
       source?: { subagent?: { thread_spawn?: { agent_nickname?: string | null } } };
     };
     if (typeof p.id !== "string") return undefined;
+    const identity = childIdentity(p);
+    if (identity.conflict) return undefined;
     const ts = Date.parse(parsed.timestamp);
     const nickname = p.agent_nickname ?? p.source?.subagent?.thread_spawn?.agent_nickname;
     return {
       threadId: p.id,
-      parentThreadId: typeof p.parent_thread_id === "string" ? p.parent_thread_id : undefined,
+      parentThreadId: identity.parent,
       startTime: Number.isFinite(ts) ? ts : 0,
       nickname: typeof nickname === "string" && nickname ? nickname : undefined,
     };
