@@ -16,7 +16,6 @@ import type {
 } from "./types.js";
 import { isPrimitive, toText } from "./utils.js";
 
-/** Extract printable text from a Codex message `content` array. */
 function extractMessageText(content: MessageContentPart[] | undefined): string {
   if (!Array.isArray(content)) return "";
   return content
@@ -31,7 +30,6 @@ function extractMessageText(content: MessageContentPart[] | undefined): string {
     .join("\n");
 }
 
-/** Extract reasoning text, skipping encrypted-only reasoning items. */
 function extractReasoning(item: {
   content?: unknown[] | string | null;
   summary?: unknown[];
@@ -81,7 +79,6 @@ function extractToolError(payload: EventMsgPayload): string | undefined {
   return undefined;
 }
 
-/** A turn that is still being assembled. */
 type MutableTurn = Turn & { lastAgentMessage?: string; userInputFallback?: string };
 
 const TURN_OPENING_EVENTS = new Set(["user_message", "item_completed", "agent_message"]);
@@ -98,16 +95,6 @@ function newTurn(startTime: number): MutableTurn {
   };
 }
 
-/**
- * Parse a Codex rollout into session metadata and a list of fully assembled
- * turns.
- *
- * Codex interleaves model I/O (`response_item`) with lifecycle events
- * (`event_msg`). We reconstruct each turn as a sequence of model steps (one per
- * model response, delimited by `token_count` events) plus the tool calls each
- * step issued. Tool execution details (status, exit code, output) arrive later
- * as `*_end` events and are matched back to their call by `call_id`.
- */
 export function parseSession(lines: RolloutLine[]): {
   sessionMeta: SessionMeta;
   turns: Turn[];
@@ -127,8 +114,6 @@ export function parseSession(lines: RolloutLine[]): {
   const ensureTurn = (ts: number): MutableTurn => (turn ??= newTurn(ts));
   const ensureStep = (ts: number) => (step ??= newStep(ts));
 
-  // Rollouts from the transition period can carry both spawn-event formats
-  // for the same child; the thread must be nested exactly once.
   const recordSubagentThread = (threadId: string) => {
     if (!turn!.subagentThreadIds.includes(threadId)) {
       turn!.subagentThreadIds.push(threadId);
@@ -198,9 +183,6 @@ export function parseSession(lines: RolloutLine[]): {
     }
 
     if (line.type === "response_item") {
-      // `payload.type` is an open string set across Codex versions, so we
-      // switch on it and cast into the concrete shape per branch rather than
-      // relying on discriminated-union narrowing.
       const p = line.payload as { type?: string } & Record<string, unknown>;
       ensureTurn(ts);
 
@@ -211,8 +193,6 @@ export function parseSession(lines: RolloutLine[]): {
           const s = ensureStep(ts);
           if (text) s.text = s.text ? `${s.text}\n${text}` : text;
         } else if (msg.role === "user" && text) {
-          // Codex concatenates injected context into user messages; the block
-          // may start with an AGENTS.md preamble, so match the elements anywhere.
           if (
             !turn!.userInputFallback &&
             !/<\/?(environment_context|user_instructions)\b/.test(text) &&
@@ -244,9 +224,6 @@ export function parseSession(lines: RolloutLine[]): {
         s.toolCalls.push(tc);
         toolCallsById.set(tc.callId, tc);
       } else if (p.type === "local_shell_call") {
-        // Built-in local shell tool: the command lives in `action`, and
-        // exec_command_end / function_call_output enrich it like any function
-        // call.
         const call = p as unknown as ResponseItemLocalShellCall;
         const s = ensureStep(ts);
         const tc: ToolCall = {
@@ -258,9 +235,6 @@ export function parseSession(lines: RolloutLine[]): {
         s.toolCalls.push(tc);
         toolCallsById.set(tc.callId, tc);
       } else if (p.type === "web_search_call") {
-        // Server-side web search: there is no output item, and the
-        // web_search_end event may be recorded before or after this item, so
-        // merge with an existing call when one was already registered.
         const call = p as unknown as ResponseItemWebSearchCall;
         const callId = call.id ?? `web_search_${ts}`;
         const existing = toolCallsById.get(callId);
@@ -322,8 +296,6 @@ export function parseSession(lines: RolloutLine[]): {
       if (et === "user_message" && typeof p.message === "string") {
         if (!turn!.userInput) turn!.userInput = p.message;
       } else if (et === "item_completed" && p.item?.type === "UserMessage") {
-        // The structured item carries the bare prompt; the `response_item`
-        // copy may be concatenated with injected context.
         const text = extractMessageText(p.item.content);
         if (text && !turn!.userInput) turn!.userInput = text;
       } else if (et === "agent_message" && typeof p.message === "string") {
@@ -336,15 +308,9 @@ export function parseSession(lines: RolloutLine[]): {
       } else if (et === "turn_aborted") {
         finishTurn(ts, { completed: true, aborted: true });
       } else {
-        // A subagent spawn records the child thread *and* (since it carries a
-        // call_id ending in "_end") enriches the spawning tool call below.
         if (et === "collab_agent_spawn_end" && typeof p.new_thread_id === "string") {
           recordSubagentThread(p.new_thread_id);
         }
-        // Codex multi-agent v2 persists the spawn as sub_agent_activity
-        // instead. Only kind "started" marks a spawn — "interacted" and
-        // "interrupted" reference an existing child and would nest it under
-        // the wrong (later) turn.
         if (
           et === "sub_agent_activity" &&
           p.kind === "started" &&
@@ -352,9 +318,6 @@ export function parseSession(lines: RolloutLine[]): {
         ) {
           recordSubagentThread(p.agent_thread_id);
         }
-        // MCP tool calls are function calls with a mangled name
-        // (`server__tool`); the begin/end events carry the clean server/tool
-        // split, which makes a much better observation name.
         if (
           (et === "mcp_tool_call_begin" || et === "mcp_tool_call_end") &&
           typeof p.call_id === "string"
@@ -365,9 +328,6 @@ export function parseSession(lines: RolloutLine[]): {
             tc.mcp = { server: inv.server, tool: inv.tool };
           }
         }
-        // Web searches run server-side inside the model response. The end
-        // event can be recorded before the web_search_call response item, so
-        // register the call here if it is not known yet.
         if (et === "web_search_end" && typeof p.call_id === "string") {
           let tc = toolCallsById.get(p.call_id);
           if (!tc) {
@@ -378,9 +338,6 @@ export function parseSession(lines: RolloutLine[]): {
           tc.args =
             tc.args ?? p.action ?? (typeof p.query === "string" ? { query: p.query } : undefined);
         }
-        // Tool execution lifecycle events (exec_command_end, patch_apply_end,
-        // mcp_tool_call_end, collab_*_end, …) match a call by id and add
-        // timing, status, and output.
         if (typeof p.call_id === "string" && et.endsWith("_end")) {
           const tc = toolCallsById.get(p.call_id);
           if (tc) {
@@ -398,7 +355,6 @@ export function parseSession(lines: RolloutLine[]): {
     }
   }
 
-  // Trailing, not-yet-completed turn (e.g. session ended mid-response).
   if (turn) finishTurn(lastTimestamp, { completed: false, aborted: false });
 
   return { sessionMeta, turns };

@@ -63,7 +63,6 @@ export type ResponseItemCustomToolCallOutput = {
   output: unknown;
 };
 
-/** Server-side web search performed by the model (no separate output item). */
 export type ResponseItemWebSearchCall = {
   type: "web_search_call";
   id?: string | null;
@@ -72,7 +71,6 @@ export type ResponseItemWebSearchCall = {
   action?: Record<string, unknown> | null;
 };
 
-/** Shell execution for models using the built-in local shell tool. */
 export type ResponseItemLocalShellCall = {
   type: "local_shell_call";
   id?: string | null;
@@ -110,7 +108,6 @@ export type TurnContextPayload = {
   [key: string]: unknown;
 };
 
-/** Codex reports top-level input/output counts inclusive of their details. */
 export type TokenUsage = {
   input_tokens?: number;
   output_tokens?: number;
@@ -159,7 +156,6 @@ export type RolloutLine =
   | { timestamp: string; type: "event_msg"; payload: EventMsgPayload }
   | { timestamp: string; type: string; payload: Record<string, unknown> };
 
-/** Payload Codex passes to the `Stop` hook on stdin. `turn_id` names the turn that stopped. */
 export type HookInput = {
   session_id?: string;
   turn_id?: string | null;
@@ -167,21 +163,14 @@ export type HookInput = {
   hook_event_name?: string;
 };
 
-/** Resolved session-level metadata. */
 export type SessionMeta = {
   sessionId: string;
   cliVersion?: string;
   modelProvider?: string;
   baseInstructions?: string;
-  /**
-   * Whether this rollout belongs to a subagent thread rather than the main
-   * session. Codex marks subagent rollouts with `parent_thread_id` and/or
-   * `thread_source: "subagent"` in `session_meta`.
-   */
   isSubagentThread?: boolean;
 };
 
-/** A single tool invocation, assembled from response items + event_msg. */
 export type ToolCall = {
   callId: string;
   name: string;
@@ -190,11 +179,9 @@ export type ToolCall = {
   endTime?: number;
   output?: unknown;
   error?: string;
-  /** Server/tool split for MCP calls, taken from mcp_tool_call_* events. */
   mcp?: { server: string; tool: string };
 };
 
-/** A single model response within a turn (one LLM call). */
 export type ModelStep = {
   startTime: number;
   endTime: number;
@@ -204,7 +191,6 @@ export type ModelStep = {
   usage?: TokenUsage;
 };
 
-/** A fully assembled Codex turn, ready to convert into Langfuse observations. */
 export type Turn = {
   turnId?: string;
   startTime: number;
