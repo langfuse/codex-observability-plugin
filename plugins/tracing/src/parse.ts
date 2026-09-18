@@ -1,3 +1,4 @@
+import { childIdentity } from "./identity.js";
 import type {
   EventMsgPayload,
   MessageContentPart,
@@ -184,7 +185,7 @@ export function parseSession(lines: RolloutLine[]): {
         cliVersion: p.cli_version,
         modelProvider: p.model_provider ?? undefined,
         baseInstructions: p.base_instructions?.text,
-        isSubagentThread: typeof p.parent_thread_id === "string" || p.thread_source === "subagent",
+        isSubagentThread: childIdentity(p).child,
       };
       continue;
     }

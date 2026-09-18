@@ -386,3 +386,22 @@ describe("user prompt extraction", () => {
     expect(turns[0]!.userInput).toBe("sag mal hallo");
   });
 });
+
+describe("nested subagent metadata", () => {
+  it.each([
+    [{ source: { subagent: { thread_spawn: { parent_thread_id: "parent" } } } }, true],
+    [{ parent_thread_id: "parent" }, true],
+    [{ thread_source: "subagent" }, true],
+    [{ source: "cli" }, false],
+    [{ source: null }, false],
+  ])("classifies session metadata %j", (metadata, expected) => {
+    const { sessionMeta } = parseSession([
+      {
+        timestamp: "2026-06-03T15:00:00.000Z",
+        type: "session_meta",
+        payload: { id: "child", ...metadata },
+      },
+    ]);
+    expect(sessionMeta.isSubagentThread).toBe(expected);
+  });
+});
