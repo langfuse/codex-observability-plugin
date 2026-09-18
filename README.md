@@ -10,9 +10,10 @@ After each Codex turn, the plugin reads the session's rollout transcript and upl
 
 - **Turn** (`Codex Turn`, an [agent observation](https://langfuse.com/docs/observability/features/observation-types)) — one trace per turn, from your prompt to the final answer.
 - **Generations** — one per model response within the turn, named `LLM` (or `LLM Subagent` inside subagent threads), with the model recorded on the observation plus reasoning, assistant text, the tool calls it requested, and token usage.
-- **Tool calls** — shell commands, `apply_patch`, `spawn_agent`, MCP tools, web searches, etc., each with its input, output, and error status. MCP calls are named `server.tool`, and failed commands are flagged as errors.
+- **Tool calls** — shell commands, `apply_patch`, `spawn_agent`, MCP tools, web searches, etc., each with its input, output, and error status. MCP calls are named `server.tool`, a command that loads a skill is named `skill:<name>`, and failed commands are flagged as errors.
 - **Subagents** — subagent threads are resolved from their own rollout files and nested under the spawning turn as `Codex Subagent Turn`.
 - **Sessions** — all turns from one Codex session are grouped via the Codex thread id, so you can replay the whole session in Langfuse's [Sessions](https://langfuse.com/docs/observability/features/sessions) view.
+- **Skills** — traces carry a `skill:<name>` tag for every skill a turn invokes, whether you invoked it explicitly or the agent picked it up itself.
 
 Interrupted turns (where you cancel mid-response) are still uploaded and flagged as interrupted.
 
@@ -111,6 +112,7 @@ codex plugin list
 | `LANGFUSE_CODEX_USER_ID`                                      | No       | Codex auth email, if found   | Attach a user id to all traces                                       |
 | `LANGFUSE_CODEX_TAGS`                                         | No       | —                            | Tags for all traces (JSON array or comma-separated)                  |
 | `LANGFUSE_CODEX_METADATA`                                     | No       | —                            | JSON object of metadata to attach to all traces                      |
+| `LANGFUSE_CODEX_SKILL_TAGS`                                   | No       | `true`                       | Tag traces with `skill:<name>` for every skill invoked in the turn   |
 | `LANGFUSE_CODEX_TRACE_SEED`                                   | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids)) |
 | `LANGFUSE_CODEX_MAX_CHARS`                                    | No       | `20000`                      | Truncate inputs/outputs longer than this many characters             |
 | `LANGFUSE_CODEX_DEBUG`                                        | No       | `false`                      | Set to `"true"` for verbose logging to stderr                        |
@@ -176,6 +178,7 @@ The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${s
 | `user_id`       | `LANGFUSE_CODEX_USER_ID`                                      | Codex auth email, if found   | User id for all traces            |
 | `tags`          | `LANGFUSE_CODEX_TAGS`                                         | —                            | Tags for all traces               |
 | `metadata`      | `LANGFUSE_CODEX_METADATA`                                     | —                            | Metadata object for all traces    |
+| `skill_tags`    | `LANGFUSE_CODEX_SKILL_TAGS`                                   | `true`                       | `skill:<name>` tag per skill used |
 | `trace_seed`    | `LANGFUSE_CODEX_TRACE_SEED`                                   | —                            | Deterministic trace-id seed       |
 | `max_chars`     | `LANGFUSE_CODEX_MAX_CHARS`                                    | `20000`                      | Input/output truncation threshold |
 | `debug`         | `LANGFUSE_CODEX_DEBUG`                                        | `false`                      | Verbose logging                   |

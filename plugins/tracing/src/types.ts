@@ -215,6 +215,8 @@ export type Turn = {
   finalOutput?: string;
   steps: ModelStep[];
   subagentThreadIds: string[];
+  /** Skills explicitly invoked with the prompt (see `skillsForPrompt`). */
+  promptSkills: string[];
   /** Whether a `task_complete`/`turn_aborted` event was seen for this turn. */
   completed: boolean;
   /** Whether the turn ended via `turn_aborted` (user interruption). */
