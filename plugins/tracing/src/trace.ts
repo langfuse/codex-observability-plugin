@@ -308,6 +308,7 @@ async function emitTurn(
         "codex.turn_id": turn.turnId,
         "codex.thread_id": sessionMeta.sessionId,
         "codex.model": turn.model,
+        "codex.reasoning_effort": turn.reasoningEffort,
         "codex.model_provider": sessionMeta.modelProvider,
         "codex.cli_version": sessionMeta.cliVersion,
         "codex.aborted": turn.aborted,
@@ -338,8 +339,14 @@ async function emitTurn(
               : previousToolResults,
           output: buildGenerationOutput(step, clip),
           model: turn.model,
+          ...(turn.reasoningEffort
+            ? { modelParameters: { reasoning_effort: turn.reasoningEffort } }
+            : {}),
           usageDetails: toUsageDetails(step.usage),
-          metadata: { "codex.step_index": i },
+          metadata: {
+            "codex.step_index": i,
+            "codex.reasoning_effort": turn.reasoningEffort,
+          },
         },
         {
           asType: "generation",

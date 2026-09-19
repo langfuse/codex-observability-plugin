@@ -13,6 +13,7 @@ import type {
   TokenUsage,
   ToolCall,
   Turn,
+  TurnContextPayload,
 } from "./types.js";
 import { isPrimitive, toText } from "./utils.js";
 
@@ -176,8 +177,10 @@ export function parseSession(lines: RolloutLine[]): {
 
     if (line.type === "turn_context") {
       const t = ensureTurn(ts);
-      const p = line.payload as { model?: string };
+      const p = line.payload as TurnContextPayload;
       t.model = p.model ?? t.model;
+      const effort = typeof p.effort === "string" ? p.effort : p.reasoning_effort;
+      if (typeof effort === "string") t.reasoningEffort = effort;
       t.invocationParams = line.payload as Record<string, unknown>;
       continue;
     }

@@ -105,6 +105,8 @@ export type ResponseItem =
 
 export type TurnContextPayload = {
   model?: string;
+  effort?: string;
+  reasoning_effort?: string;
   [key: string]: unknown;
 };
 
@@ -196,6 +198,7 @@ export type Turn = {
   startTime: number;
   endTime: number;
   model?: string;
+  reasoningEffort?: string;
   invocationParams?: Record<string, unknown>;
   userInput?: string;
   finalOutput?: string;
