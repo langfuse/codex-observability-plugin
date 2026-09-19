@@ -1,5 +1,11 @@
 import { LangfuseSpanProcessor } from "@langfuse/otel";
 import { setLangfuseTracerProvider } from "@langfuse/tracing";
+import {
+  defaultResource,
+  detectResources,
+  envDetector,
+  resourceFromAttributes,
+} from "@opentelemetry/resources";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 
 import type { Config } from "./config.js";
@@ -8,6 +14,14 @@ export type Instrumentation = {
   /** Flush buffered spans and tear down the tracer provider. */
   shutdown: () => Promise<void>;
 };
+
+const DEFAULT_SERVICE_NAME = "codex";
+
+function buildResource() {
+  return defaultResource()
+    .merge(resourceFromAttributes({ "service.name": DEFAULT_SERVICE_NAME }))
+    .merge(detectResources({ detectors: [envDetector] }));
+}
 
 /**
  * Configure an isolated OpenTelemetry tracer provider wired to Langfuse.
@@ -34,6 +48,7 @@ export function setupInstrumentation(config: Config): Instrumentation {
   });
 
   const provider = new NodeTracerProvider({
+    resource: buildResource(),
     spanProcessors: [spanProcessor],
   });
   provider.register();
