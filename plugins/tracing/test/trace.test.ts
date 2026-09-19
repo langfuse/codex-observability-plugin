@@ -354,15 +354,27 @@ describe("convertRollout", () => {
     const dir = stageFixtures();
     const file = path.join(dir, "rollout-thread-settings-main.jsonl");
 
-    await convertRollout(file, { config: baseConfig });
+    await convertAndMark(file, { config: baseConfig });
     const roots = exporter.getFinishedSpans().filter((s) => s.name === "Codex Turn");
     expect(roots.map((s) => attr(s, "langfuse.observation.metadata.codex.turn_id")).sort()).toEqual(
       ["turn-a", "turn-b"],
     );
 
     exporter.reset();
-    await convertRollout(file, { config: baseConfig });
+    await convertAndMark(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
+  });
+
+  it("does not emit an id-less subagent turn for a settings event between the child's turns", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-settings-parent.jsonl"), { config: baseConfig });
+
+    const childTurns = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "Codex Subagent Turn" && obsType(s) === "agent");
+    expect(
+      childTurns.map((s) => attr(s, "langfuse.observation.metadata.codex.turn_id")).sort(),
+    ).toEqual(["turn-c1", "turn-c2"]);
   });
 
   it("skips turns already recorded in the sidecar (dedup)", async () => {

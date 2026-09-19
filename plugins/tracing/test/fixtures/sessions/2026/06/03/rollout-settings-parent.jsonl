@@ -1,0 +1,8 @@
+{"timestamp":"2026-06-03T17:00:00.000Z","type":"session_meta","payload":{"id":"sess-settings-parent","cli_version":"0.153.4","model_provider":"openai"}}
+{"timestamp":"2026-06-03T17:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-sp"}}
+{"timestamp":"2026-06-03T17:00:01.100Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
+{"timestamp":"2026-06-03T17:00:01.200Z","type":"event_msg","payload":{"type":"user_message","message":"Spawn a subagent to answer two questions"}}
+{"timestamp":"2026-06-03T17:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"call-spawn-settings","arguments":"{\"prompt\":\"answer two questions\"}"}}
+{"timestamp":"2026-06-03T17:00:02.500Z","type":"event_msg","payload":{"type":"collab_agent_spawn_end","call_id":"call-spawn-settings","new_thread_id":"thread-settings-child","status":"pending_init"}}
+{"timestamp":"2026-06-03T17:00:02.900Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}
+{"timestamp":"2026-06-03T17:00:09.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-sp"}}
