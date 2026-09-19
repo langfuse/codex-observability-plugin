@@ -78,7 +78,20 @@ beforeEach(() => {
 afterEach(() => {
   (globalThis as Record<symbol, unknown>)[OTEL_API_KEY] = previousGlobal;
   setLangfuseTracerProvider(null);
+  vi.unstubAllEnvs();
 });
+
+async function resourceAttrsOfExportedSpan(): Promise<Record<string, unknown>> {
+  const instrumentation = setupInstrumentation(baseConfig);
+  const dir = stageFixtures();
+
+  await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), { config: baseConfig });
+  await instrumentation.shutdown();
+
+  const root = captured.find((s) => s.name === "Codex Turn");
+  expect(root, "the turn span never reached the plugin's span processor").toBeDefined();
+  return root!.resource.attributes;
+}
 
 describe("setupInstrumentation", () => {
   it("exports spans when the global registry already holds another provider", async () => {
@@ -99,5 +112,69 @@ describe("setupInstrumentation", () => {
     await instrumentation.shutdown();
 
     expect(getLangfuseTracerProvider()).not.toBe(bound);
+  });
+});
+
+describe("resource attributes", () => {
+  it("names the service `codex` instead of falling back to unknown_service", async () => {
+    const attrs = await resourceAttrsOfExportedSpan();
+
+    expect(attrs["service.name"]).toBe("codex");
+  });
+
+  it("keeps the telemetry.sdk.* attributes from the default resource", async () => {
+    const attrs = await resourceAttrsOfExportedSpan();
+
+    expect(attrs["telemetry.sdk.language"]).toBe("nodejs");
+    expect(attrs["telemetry.sdk.name"]).toBe("opentelemetry");
+    expect(attrs["telemetry.sdk.version"]).toEqual(expect.any(String));
+  });
+
+  it("lets OTEL_SERVICE_NAME override the default", async () => {
+    vi.stubEnv("OTEL_SERVICE_NAME", "codex-staging");
+
+    const attrs = await resourceAttrsOfExportedSpan();
+
+    expect(attrs["service.name"]).toBe("codex-staging");
+  });
+
+  it("merges OTEL_RESOURCE_ATTRIBUTES alongside the default service name", async () => {
+    vi.stubEnv(
+      "OTEL_RESOURCE_ATTRIBUTES",
+      "service.namespace=engineering,service.version=1.2.3,team.name=platform",
+    );
+
+    const attrs = await resourceAttrsOfExportedSpan();
+
+    expect(attrs["service.namespace"]).toBe("engineering");
+    expect(attrs["service.version"]).toBe("1.2.3");
+    expect(attrs["team.name"]).toBe("platform");
+    expect(attrs["service.name"]).toBe("codex");
+  });
+
+  it("gives OTEL_SERVICE_NAME precedence over service.name in OTEL_RESOURCE_ATTRIBUTES", async () => {
+    vi.stubEnv("OTEL_SERVICE_NAME", "from-service-name");
+    vi.stubEnv("OTEL_RESOURCE_ATTRIBUTES", "service.name=from-resource-attributes");
+
+    const attrs = await resourceAttrsOfExportedSpan();
+
+    expect(attrs["service.name"]).toBe("from-service-name");
+  });
+
+  it("percent-decodes OTEL_RESOURCE_ATTRIBUTES values", async () => {
+    vi.stubEnv("OTEL_RESOURCE_ATTRIBUTES", "deployment.note=a%2Cb%3Dc");
+
+    const attrs = await resourceAttrsOfExportedSpan();
+
+    expect(attrs["deployment.note"]).toBe("a,b=c");
+  });
+
+  it("discards a malformed OTEL_RESOURCE_ATTRIBUTES without losing the default", async () => {
+    vi.stubEnv("OTEL_RESOURCE_ATTRIBUTES", "team.name=platform,broken=a=b");
+
+    const attrs = await resourceAttrsOfExportedSpan();
+
+    expect(attrs["team.name"]).toBeUndefined();
+    expect(attrs["service.name"]).toBe("codex");
   });
 });
