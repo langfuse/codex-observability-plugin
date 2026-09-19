@@ -89,6 +89,7 @@ describe("convertRollout", () => {
     expect(parentId(root!)).toBeUndefined(); // top-level turn = its own trace
     expect(attr(root!, "langfuse.observation.input")).toContain("List the files");
     expect(attr(root!, "langfuse.observation.output")).toContain("two files");
+    expect(attr(root!, "langfuse.observation.metadata.codex.reasoning_effort")).toBe("medium");
 
     // Backdated to the turn's task_started timestamp.
     expect(startMs(root!)).toBe(Date.parse("2026-06-03T10:00:01.000Z"));
@@ -103,6 +104,10 @@ describe("convertRollout", () => {
       expect(gen.name).toBe("LLM");
       expect(parentId(gen)).toBe(root!.spanContext().spanId);
       expect(attr(gen, "langfuse.observation.model.name")).toBe("gpt-5.4");
+      expect(attr(gen, "langfuse.observation.model.parameters")).toBe(
+        JSON.stringify({ reasoning_effort: "medium" }),
+      );
+      expect(attr(gen, "langfuse.observation.metadata.codex.reasoning_effort")).toBe("medium");
     }
     // Usage is sent in Langfuse's OpenAI-compatible shape. Langfuse then
     // normalizes the inclusive parent counts and nested detail counts.
@@ -349,15 +354,27 @@ describe("convertRollout", () => {
     const dir = stageFixtures();
     const file = path.join(dir, "rollout-thread-settings-main.jsonl");
 
-    await convertRollout(file, { config: baseConfig });
+    await convertAndMark(file, { config: baseConfig });
     const roots = exporter.getFinishedSpans().filter((s) => s.name === "Codex Turn");
     expect(roots.map((s) => attr(s, "langfuse.observation.metadata.codex.turn_id")).sort()).toEqual(
       ["turn-a", "turn-b"],
     );
 
     exporter.reset();
-    await convertRollout(file, { config: baseConfig });
+    await convertAndMark(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
+  });
+
+  it("does not emit an id-less subagent turn for a settings event between the child's turns", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-settings-parent.jsonl"), { config: baseConfig });
+
+    const childTurns = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "Codex Subagent Turn" && obsType(s) === "agent");
+    expect(
+      childTurns.map((s) => attr(s, "langfuse.observation.metadata.codex.turn_id")).sort(),
+    ).toEqual(["turn-c1", "turn-c2"]);
   });
 
   it("skips turns already recorded in the sidecar (dedup)", async () => {

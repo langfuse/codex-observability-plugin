@@ -36,6 +36,7 @@ describe("parseSession", () => {
     expect(turn.completed).toBe(true);
     expect(turn.aborted).toBe(false);
     expect(turn.model).toBe("gpt-5.4");
+    expect(turn.reasoningEffort).toBe("medium");
     expect(turn.userInput).toBe("List the files in the repo");
     expect(turn.finalOutput).toBe("There are two files: file1.txt and file2.txt.");
     expect(turn.totalUsage?.total_tokens).toBe(300);
@@ -77,6 +78,90 @@ describe("parseSession", () => {
     expect(failing?.error).toBe("command failed");
     expect(turn.startTime).toBe(Date.parse("2026-06-03T11:00:01.000Z"));
     expect(turn.endTime).toBe(Date.parse("2026-06-03T11:00:05.000Z"));
+  });
+
+  it("takes reasoning effort per turn from turn_context, not from thread settings", () => {
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-06-03T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t1" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:01.100Z",
+        type: "turn_context",
+        payload: { model: "gpt-5.6-sol", effort: "high" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.000Z",
+        type: "event_msg",
+        payload: { type: "agent_message", message: "done" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.300Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t1" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.900Z",
+        type: "event_msg",
+        payload: {
+          type: "thread_settings_applied",
+          thread_settings: { reasoning_effort: "low" },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t2" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.100Z",
+        type: "turn_context",
+        payload: { model: "gpt-5.6-sol", effort: "xhigh" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:04.000Z",
+        type: "event_msg",
+        payload: { type: "agent_message", message: "done again" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:04.300Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t2" },
+      },
+    ];
+
+    const { turns } = parseSession(lines);
+    // The settings event between the turns creates no turn of its own (#78).
+    expect(turns.map((t) => t.turnId)).toEqual(["t1", "t2"]);
+    expect(turns[0].reasoningEffort).toBe("high");
+    expect(turns[1].reasoningEffort).toBe("xhigh");
+  });
+
+  it("accepts reasoning_effort as a forward-compatible alias for effort", () => {
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-06-03T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:01.100Z",
+        type: "turn_context",
+        payload: { model: "gpt-5.6-sol", reasoning_effort: "max" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t" },
+      },
+    ];
+
+    const { turns } = parseSession(lines);
+    expect(turns[0].reasoningEffort).toBe("max");
   });
 
   it("records subagent threads from sub_agent_activity, ignoring non-started kinds", () => {
