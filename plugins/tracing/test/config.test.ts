@@ -37,8 +37,27 @@ describe("getConfig", () => {
     const config = await getConfig({ home: emptyHome(), cwd: emptyHome(), env: {} });
     expect(config.enabled).toBe(false);
     expect(config.base_url).toBe("https://cloud.langfuse.com");
-    expect(config.max_chars).toBe(20_000);
     expect(config.fail_on_error).toBe(false);
+  });
+
+  it("ignores a stale max_chars key without discarding the rest of the file", async () => {
+    // Truncation was removed; a config file still carrying the old key must not
+    // fail validation, because readConfigFile swallows the error and would drop
+    // the user's credentials with it.
+    const home = makeTmpHome({
+      rel: ".codex/langfuse.json",
+      contents: {
+        enabled: true,
+        public_key: "pk-lf-stale",
+        secret_key: "sk-lf-stale",
+        max_chars: 5000,
+      },
+    });
+    const config = await getConfig({ home, cwd: emptyHome(), env: {} });
+    expect(config.enabled).toBe(true);
+    expect(config.public_key).toBe("pk-lf-stale");
+    expect(config.secret_key).toBe("sk-lf-stale");
+    expect((config as Record<string, unknown>).max_chars).toBeUndefined();
   });
 
   it("reads credentials and enable flag from environment variables", async () => {

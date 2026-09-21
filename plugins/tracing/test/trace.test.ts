@@ -24,7 +24,6 @@ const baseConfig: Config = {
   public_key: "pk-lf-test",
   secret_key: "sk-lf-test",
   base_url: "https://cloud.langfuse.com",
-  max_chars: 20_000,
   debug: false,
   fail_on_error: false,
 };

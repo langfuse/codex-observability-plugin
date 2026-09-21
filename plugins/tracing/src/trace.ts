@@ -15,7 +15,7 @@ import type { Config } from "./config.js";
 import { parseArgs, parseSession } from "./parse.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
 import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
-import { debugLog, toText, truncate } from "./utils.js";
+import { debugLog, toText } from "./utils.js";
 
 async function loadSession(file: string): Promise<RolloutLine[]> {
   const data = await fs.readFile(file, "utf-8");
@@ -245,27 +245,10 @@ function toUsageDetails(
   } as unknown as LangfuseGenerationAttributes["usageDetails"];
 }
 
-type Clip = {
-  (value: string): string;
-  (value: unknown): unknown;
-};
-
-/** Build a clip() that truncates long strings to `maxChars`. */
-function makeClip(maxChars: number): Clip {
-  function clip(value: string): string;
-  function clip(value: unknown): unknown;
-  function clip(value: unknown): unknown {
-    if (typeof value !== "string") return value;
-    const { text, meta } = truncate(value, maxChars);
-    return meta ? `${text}\n…[truncated ${meta.originalLength - text.length} chars]` : text;
-  }
-  return clip;
-}
-
-function buildGenerationOutput(step: ModelStep, clip: Clip): Record<string, unknown> | undefined {
+function buildGenerationOutput(step: ModelStep): Record<string, unknown> | undefined {
   const output: Record<string, unknown> = {};
-  if (step.text) output.content = clip(step.text);
-  if (step.reasoning) output.reasoning = clip(step.reasoning);
+  if (step.text) output.content = step.text;
+  if (step.reasoning) output.reasoning = step.reasoning;
   if (step.toolCalls.length > 0) {
     output.tool_calls = step.toolCalls.map((tc) => ({
       id: tc.callId,
@@ -303,8 +286,6 @@ async function emitTurn(
     unannouncedSubagents?: SubagentRollout[];
   },
 ): Promise<void> {
-  const clip = makeClip(ctx.config.max_chars);
-
   // A turn belongs to a subagent when its rollout is marked as a subagent
   // thread or when it is being nested under a spawning turn.
   const isSubagent = sessionMeta.isSubagentThread === true || ctx.parentObservation != null;
@@ -312,8 +293,8 @@ async function emitTurn(
   const root = startObservation(
     isSubagent ? "Codex Subagent Turn" : "Codex Turn",
     {
-      input: turn.userInput != null ? clip(turn.userInput) : undefined,
-      output: turn.finalOutput != null ? clip(turn.finalOutput) : undefined,
+      input: turn.userInput,
+      output: turn.finalOutput,
       level: turn.aborted ? "WARNING" : undefined,
       statusMessage: turn.aborted ? "Turn interrupted by user" : undefined,
       metadata: {
@@ -342,13 +323,8 @@ async function emitTurn(
       const generation = startObservation(
         isSubagent ? "LLM Subagent" : "LLM",
         {
-          input:
-            i === 0
-              ? turn.userInput != null
-                ? clip(turn.userInput)
-                : undefined
-              : previousToolResults,
-          output: buildGenerationOutput(step, clip),
+          input: i === 0 ? turn.userInput : previousToolResults,
+          output: buildGenerationOutput(step),
           model: turn.model,
           usageDetails: toUsageDetails(step.usage),
           metadata: { "codex.step_index": i },
@@ -361,7 +337,7 @@ async function emitTurn(
       );
 
       for (const tc of step.toolCalls) {
-        emitToolCall(tc, generation, clip, step.endTime);
+        emitToolCall(tc, generation, step.endTime);
       }
 
       generation.end(new Date(step.endTime));
@@ -370,8 +346,8 @@ async function emitTurn(
         step.toolCalls.length > 0
           ? step.toolCalls.map((tc) => ({
               name: tc.name,
-              output: tc.output != null ? clip(toText(tc.output)) : undefined,
-              ...(tc.error ? { error: clip(tc.error) } : {}),
+              output: tc.output != null ? toText(tc.output) : undefined,
+              ...(tc.error ? { error: tc.error } : {}),
             }))
           : undefined;
     }
@@ -401,9 +377,9 @@ async function emitTurn(
     debugLog(`failed to convert turn ${turn.turnId ?? "(no turn id)"}:`, error);
     root.update({
       level: "ERROR",
-      statusMessage: clip(
-        `Trace conversion failed: ${error instanceof Error ? error.message : String(error)}`,
-      ),
+      statusMessage: `Trace conversion failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     });
   }
 
@@ -411,19 +387,14 @@ async function emitTurn(
   if (failure && ctx.config.fail_on_error) throw failure;
 }
 
-function emitToolCall(
-  tc: ToolCall,
-  parent: LangfuseObservation,
-  clip: Clip,
-  fallbackEnd: number,
-): void {
+function emitToolCall(tc: ToolCall, parent: LangfuseObservation, fallbackEnd: number): void {
   const tool = startObservation(
     toolObservationName(tc),
     {
       input: tc.args,
-      output: tc.output != null ? clip(toText(tc.output)) : undefined,
+      output: tc.output != null ? toText(tc.output) : undefined,
       level: tc.error ? "ERROR" : undefined,
-      statusMessage: tc.error ? clip(tc.error) : undefined,
+      statusMessage: tc.error,
       metadata: { "codex.call_id": tc.callId, "codex.tool_name": tc.name || "tool" },
     },
     {

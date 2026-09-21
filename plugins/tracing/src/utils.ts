@@ -41,22 +41,6 @@ export function toText(value: unknown): string {
   }
 }
 
-/**
- * Truncate large text to keep traces lightweight. Returns the (possibly
- * shortened) value plus metadata describing what was dropped, or `undefined`
- * metadata when nothing was truncated.
- */
-export function truncate(
-  value: string,
-  maxChars: number,
-): { text: string; meta?: { truncated: true; originalLength: number } } {
-  if (value.length <= maxChars) return { text: value };
-  return {
-    text: value.slice(0, maxChars),
-    meta: { truncated: true, originalLength: value.length },
-  };
-}
-
 let debugEnabled = false;
 export function setDebug(enabled: boolean): void {
   debugEnabled = enabled;

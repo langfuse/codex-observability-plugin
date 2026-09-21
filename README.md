@@ -112,7 +112,6 @@ codex plugin list
 | `LANGFUSE_CODEX_TAGS`                                         | No       | —                            | Tags for all traces (JSON array or comma-separated)                  |
 | `LANGFUSE_CODEX_METADATA`                                     | No       | —                            | JSON object of metadata to attach to all traces                      |
 | `LANGFUSE_CODEX_TRACE_SEED`                                   | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids)) |
-| `LANGFUSE_CODEX_MAX_CHARS`                                    | No       | `20000`                      | Truncate inputs/outputs longer than this many characters             |
 | `LANGFUSE_CODEX_DEBUG`                                        | No       | `false`                      | Set to `"true"` for verbose logging to stderr                        |
 | `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | No       | `false`                      | Set to `"true"` to make hook upload errors fail the hook             |
 
@@ -166,20 +165,19 @@ The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${s
 
 ## JSON config reference
 
-| Config key      | Environment variable                                          | Default                      | Description                       |
-| --------------- | ------------------------------------------------------------- | ---------------------------- | --------------------------------- |
-| `enabled`       | `TRACE_TO_LANGFUSE`                                           | `false`                      | Enable tracing                    |
-| `public_key`    | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_CODEX_PUBLIC_KEY`           | —                            | Langfuse public key               |
-| `secret_key`    | `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`           | —                            | Langfuse secret key               |
-| `base_url`      | `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`               | `https://cloud.langfuse.com` | Langfuse host                     |
-| `environment`   | `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT` | —                            | Environment label                 |
-| `user_id`       | `LANGFUSE_CODEX_USER_ID`                                      | Codex auth email, if found   | User id for all traces            |
-| `tags`          | `LANGFUSE_CODEX_TAGS`                                         | —                            | Tags for all traces               |
-| `metadata`      | `LANGFUSE_CODEX_METADATA`                                     | —                            | Metadata object for all traces    |
-| `trace_seed`    | `LANGFUSE_CODEX_TRACE_SEED`                                   | —                            | Deterministic trace-id seed       |
-| `max_chars`     | `LANGFUSE_CODEX_MAX_CHARS`                                    | `20000`                      | Input/output truncation threshold |
-| `debug`         | `LANGFUSE_CODEX_DEBUG`                                        | `false`                      | Verbose logging                   |
-| `fail_on_error` | `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | `false`                      | Fail the hook on upload errors    |
+| Config key      | Environment variable                                          | Default                      | Description                    |
+| --------------- | ------------------------------------------------------------- | ---------------------------- | ------------------------------ |
+| `enabled`       | `TRACE_TO_LANGFUSE`                                           | `false`                      | Enable tracing                 |
+| `public_key`    | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_CODEX_PUBLIC_KEY`           | —                            | Langfuse public key            |
+| `secret_key`    | `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`           | —                            | Langfuse secret key            |
+| `base_url`      | `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`               | `https://cloud.langfuse.com` | Langfuse host                  |
+| `environment`   | `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT` | —                            | Environment label              |
+| `user_id`       | `LANGFUSE_CODEX_USER_ID`                                      | Codex auth email, if found   | User id for all traces         |
+| `tags`          | `LANGFUSE_CODEX_TAGS`                                         | —                            | Tags for all traces            |
+| `metadata`      | `LANGFUSE_CODEX_METADATA`                                     | —                            | Metadata object for all traces |
+| `trace_seed`    | `LANGFUSE_CODEX_TRACE_SEED`                                   | —                            | Deterministic trace-id seed    |
+| `debug`         | `LANGFUSE_CODEX_DEBUG`                                        | `false`                      | Verbose logging                |
+| `fail_on_error` | `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | `false`                      | Fail the hook on upload errors |
 
 ## Troubleshooting
 
@@ -204,7 +202,7 @@ The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${s
 
 ## Data sent to Langfuse
 
-When enabled, the plugin uploads completed Codex transcript data to Langfuse: prompts, assistant messages, reasoning summaries, tool-call inputs and outputs, model metadata, and token usage. Do not enable tracing for sessions containing data you do not want stored in Langfuse. Use `LANGFUSE_CODEX_MAX_CHARS` to cap how much of large inputs/outputs is captured.
+When enabled, the plugin uploads completed Codex transcript data to Langfuse: prompts, assistant messages, reasoning summaries, tool-call inputs and outputs, model metadata, and token usage. Do not enable tracing for sessions containing data you do not want stored in Langfuse.
 
 ## How it works
 
