@@ -12,6 +12,7 @@ import {
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
+import { currentIdSeed, seedIds } from "./instrumentation.js";
 import { parseArgs, parseSession } from "./parse.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
 import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
@@ -309,6 +310,9 @@ async function emitTurn(
   // thread or when it is being nested under a spawning turn.
   const isSubagent = sessionMeta.isSubagentThread === true || ctx.parentObservation != null;
 
+  const outerSeed = currentIdSeed();
+  seedIds(`${sessionMeta.sessionId}:${turn.turnId ?? "no-turn-id"}`);
+
   const root = startObservation(
     isSubagent ? "Codex Subagent Turn" : "Codex Turn",
     {
@@ -389,12 +393,14 @@ async function emitTurn(
     for (const sub of [...announced, ...(ctx.unannouncedSubagents ?? [])]) {
       if (ctx.seenThreadIds.has(sub.threadId)) continue;
       ctx.seenThreadIds.add(sub.threadId);
+      const seedBeforeChild = currentIdSeed();
       await convertRollout(sub.file, {
         config: ctx.config,
         parentObservation: root,
         subagentIndex: ctx.subagentIndex,
         seenThreadIds: ctx.seenThreadIds,
       });
+      seedIds(seedBeforeChild);
     }
   } catch (error) {
     failure = error;
@@ -408,6 +414,7 @@ async function emitTurn(
   }
 
   root.end(new Date(turn.endTime));
+  seedIds(outerSeed);
   if (failure && ctx.config.fail_on_error) throw failure;
 }
 
