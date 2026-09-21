@@ -26,6 +26,7 @@ async function loadSession(file: string): Promise<RolloutLine[]> {
     try {
       lines.push(JSON.parse(trimmed) as RolloutLine);
     } catch {
+      // skip malformed lines rather than aborting the whole upload
     }
   }
   return lines;
