@@ -114,7 +114,6 @@ codex plugin list
 | `LANGFUSE_CODEX_METADATA`                                     | No       | —                            | JSON object of metadata to attach to all traces                      |
 | `LANGFUSE_CODEX_SKILL_TAGS`                                   | No       | `true`                       | Tag traces with `skill:<name>` for every skill invoked in the turn   |
 | `LANGFUSE_CODEX_TRACE_SEED`                                   | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids)) |
-| `LANGFUSE_CODEX_MAX_CHARS`                                    | No       | `20000`                      | Truncate inputs/outputs longer than this many characters             |
 | `LANGFUSE_CODEX_DEBUG`                                        | No       | `false`                      | Set to `"true"` for verbose logging to stderr                        |
 | `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | No       | `false`                      | Set to `"true"` to make hook upload errors fail the hook             |
 
@@ -180,7 +179,6 @@ The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${s
 | `metadata`      | `LANGFUSE_CODEX_METADATA`                                     | —                            | Metadata object for all traces    |
 | `skill_tags`    | `LANGFUSE_CODEX_SKILL_TAGS`                                   | `true`                       | `skill:<name>` tag per skill used |
 | `trace_seed`    | `LANGFUSE_CODEX_TRACE_SEED`                                   | —                            | Deterministic trace-id seed       |
-| `max_chars`     | `LANGFUSE_CODEX_MAX_CHARS`                                    | `20000`                      | Input/output truncation threshold |
 | `debug`         | `LANGFUSE_CODEX_DEBUG`                                        | `false`                      | Verbose logging                   |
 | `fail_on_error` | `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | `false`                      | Fail the hook on upload errors    |
 
@@ -207,7 +205,7 @@ The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${s
 
 ## Data sent to Langfuse
 
-When enabled, the plugin uploads completed Codex transcript data to Langfuse: prompts, assistant messages, reasoning summaries, tool-call inputs and outputs, model metadata, and token usage. Do not enable tracing for sessions containing data you do not want stored in Langfuse. Use `LANGFUSE_CODEX_MAX_CHARS` to cap how much of large inputs/outputs is captured.
+When enabled, the plugin uploads completed Codex transcript data to Langfuse: prompts, assistant messages, reasoning summaries, tool-call inputs and outputs, model metadata, and token usage. Do not enable tracing for sessions containing data you do not want stored in Langfuse.
 
 ## How it works
 
