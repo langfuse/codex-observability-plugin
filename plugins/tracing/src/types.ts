@@ -122,25 +122,18 @@ export type EventMsgPayload = {
   type: string;
   turn_id?: string | null;
   call_id?: string;
-  /** token_count */
   info?: {
     total_token_usage?: TokenUsage;
     last_token_usage?: TokenUsage;
     model_context_window?: number;
   } | null;
-  /** item_completed */
   item?: { type?: string; content?: MessageContentPart[] } | null;
-  /** collab_agent_spawn_end */
   new_thread_id?: string | null;
-  /** sub_agent_activity */
   kind?: string;
   agent_thread_id?: string | null;
-  /** mcp_tool_call_begin / mcp_tool_call_end */
   invocation?: { server?: string; tool?: string; arguments?: unknown } | null;
-  /** web_search_end */
   query?: string;
   action?: Record<string, unknown> | null;
-  /** exec_command_end / patch_apply_end */
   status?: string;
   exit_code?: number;
   stdout?: string;
@@ -204,11 +197,8 @@ export type Turn = {
   finalOutput?: string;
   steps: ModelStep[];
   subagentThreadIds: string[];
-  /** Skills explicitly invoked with the prompt (see `skillsForPrompt`). */
   promptSkills: string[];
-  /** Whether a `task_complete`/`turn_aborted` event was seen for this turn. */
   completed: boolean;
-  /** Whether the turn ended via `turn_aborted` (user interruption). */
   aborted: boolean;
   totalUsage?: TokenUsage;
 };

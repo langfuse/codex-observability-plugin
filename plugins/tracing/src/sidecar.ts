@@ -19,6 +19,5 @@ export async function markTurnUploaded(rolloutFile: string, turnId: string): Pro
   try {
     await fs.appendFile(`${rolloutFile}.langfuse`, `${turnId}\n`, "utf-8");
   } catch {
-    // Best-effort: a failed write only risks a duplicate upload next time.
   }
 }

@@ -15,29 +15,17 @@ import { z } from "zod";
  * without disturbing other Langfuse tooling on the same machine.
  */
 export const ConfigSchema = z.object({
-  // TRACE_TO_LANGFUSE === "true"
   enabled: z.boolean(),
-  // LANGFUSE_CODEX_PUBLIC_KEY | LANGFUSE_PUBLIC_KEY
   public_key: z.string().optional(),
-  // LANGFUSE_CODEX_SECRET_KEY | LANGFUSE_SECRET_KEY
   secret_key: z.string().optional(),
-  // LANGFUSE_CODEX_BASE_URL | LANGFUSE_BASE_URL
   base_url: z.string(),
-  // LANGFUSE_CODEX_ENVIRONMENT | LANGFUSE_TRACING_ENVIRONMENT
   environment: z.string().optional(),
-  // LANGFUSE_CODEX_USER_ID
   user_id: z.string().optional(),
-  // LANGFUSE_CODEX_TAGS (JSON array or comma-separated list)
   tags: z.array(z.string()).optional(),
-  // LANGFUSE_CODEX_METADATA (JSON object; values coerced to strings)
   metadata: z.record(z.string(), z.string()).optional(),
-  // LANGFUSE_CODEX_SKILL_TAGS — tag traces with skill:<name> per skill used
   skill_tags: z.boolean(),
-  // LANGFUSE_CODEX_TRACE_SEED — deterministic trace ids derived from this seed
   trace_seed: z.string().optional(),
-  // LANGFUSE_CODEX_DEBUG
   debug: z.boolean(),
-  // LANGFUSE_CODEX_FAIL_ON_ERROR
   fail_on_error: z.boolean(),
 });
 

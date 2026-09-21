@@ -69,7 +69,6 @@ export function setupInstrumentation(config: Config): Instrumentation {
     baseUrl: config.base_url,
     environment: config.environment,
     exportMode: "batched",
-    // The hook only ever creates Langfuse spans, so export all of them.
     shouldExportSpan: () => true,
   });
 

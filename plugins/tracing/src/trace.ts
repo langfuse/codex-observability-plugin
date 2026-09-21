@@ -28,7 +28,6 @@ async function loadSession(file: string): Promise<RolloutLine[]> {
     try {
       lines.push(JSON.parse(trimmed) as RolloutLine);
     } catch {
-      // skip malformed lines rather than aborting the whole upload
     }
   }
   return lines;
@@ -274,7 +273,6 @@ async function emitTurn(
     config: Config;
     rolloutFile: string;
     parentObservation?: LangfuseObservation;
-    /** Pre-derived trace id for top-level turns (see seededTraceParent). */
     seededParent?: SpanContext;
     subagentIndex: SubagentIndex;
     seenThreadIds: Set<string>;
@@ -493,7 +491,7 @@ export async function convertRollout(
       continue;
     }
     if (uploaded.has(turn.turnId)) {
-      continue; // already delivered by a previous hook invocation
+      continue;
     }
 
     const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
