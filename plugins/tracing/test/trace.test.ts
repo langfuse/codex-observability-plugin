@@ -135,6 +135,180 @@ describe("convertRollout", () => {
     expect(generations.map((g) => g.spanContext().spanId)).toContain(parentId(tools[0]));
   });
 
+  it("gives each generation the conversation up to that call", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), { config: baseConfig });
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans.find((s) => s.name === "system_prompt")).toBeUndefined();
+
+    const generations = spans
+      .filter((s) => obsType(s) === "generation")
+      .sort((a, b) => startMs(a) - startMs(b));
+    expect(generations).toHaveLength(2);
+
+    const INSTRUCTIONS = "You are Codex.\n\n<environment_context>cwd=/repo</environment_context>";
+    const SYSTEM = { role: "system", content: INSTRUCTIONS };
+    const USER = { role: "user", content: "List the files in the repo" };
+
+    expect(JSON.parse(attr(generations[0], "langfuse.observation.input"))).toEqual([SYSTEM, USER]);
+
+    expect(JSON.parse(attr(generations[1], "langfuse.observation.input"))).toEqual([
+      SYSTEM,
+      USER,
+      {
+        role: "assistant",
+        thinking: [{ type: "thinking", content: "I'll list files with ls." }],
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "exec_command", arguments: '{"command":["ls"]}' },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-1",
+        name: "exec_command",
+        content: "file1.txt\nfile2.txt",
+      },
+    ]);
+
+    const root = spans.find((s) => s.name === "Codex Turn");
+    const meta = (key: string): string =>
+      attr(root!, `langfuse.observation.metadata.codex.system_prompt.${key}`);
+    expect(meta("total_chars")).toBe("66");
+    expect(meta("developer_message_count")).toBe("1");
+    expect(meta("changed_this_turn")).toBe("true");
+  });
+
+  it("carries earlier turns of the thread into a later turn's generation input", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-hist-"));
+    const day = path.join(dir, "sessions", "2026", "06", "03");
+    fs.mkdirSync(day, { recursive: true });
+    const file = path.join(day, "rollout-history.jsonl");
+    const ts = (n: number): string => `2026-06-03T09:00:${String(n).padStart(2, "0")}.000Z`;
+    const turn = (n: number, id: string, prompt: string, answer: string): unknown[] => [
+      { timestamp: ts(n), type: "event_msg", payload: { type: "task_started", turn_id: id } },
+      { timestamp: ts(n), type: "event_msg", payload: { type: "user_message", message: prompt } },
+      {
+        timestamp: ts(n + 1),
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: answer }],
+        },
+      },
+      { timestamp: ts(n + 1), type: "event_msg", payload: { type: "token_count", info: {} } },
+      { timestamp: ts(n + 2), type: "event_msg", payload: { type: "task_complete", turn_id: id } },
+    ];
+    fs.writeFileSync(
+      file,
+      [
+        { timestamp: ts(0), type: "session_meta", payload: { id: "sess-hist" } },
+        ...turn(1, "t1", "First question", "First answer"),
+        ...turn(4, "t2", "Second question", "Second answer"),
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n"),
+    );
+
+    await convertAndMark(file, { config: baseConfig, stoppedTurnId: "t2" });
+
+    const generations = exporter
+      .getFinishedSpans()
+      .filter((s) => obsType(s) === "generation")
+      .sort((a, b) => startMs(a) - startMs(b));
+    expect(generations).toHaveLength(2);
+
+    expect(JSON.parse(attr(generations[0], "langfuse.observation.input"))).toEqual([
+      { role: "user", content: "First question" },
+    ]);
+
+    expect(JSON.parse(attr(generations[1], "langfuse.observation.input"))).toEqual([
+      { role: "user", content: "First question" },
+      { role: "assistant", content: "First answer" },
+      { role: "user", content: "Second question" },
+    ]);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("sends attached images as multimodal content and the loaded tools on the call", async () => {
+    const URI = "data:image/png;base64,iVBORw0KGgo=";
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-media-"));
+    const day = path.join(dir, "sessions", "2026", "06", "03");
+    fs.mkdirSync(day, { recursive: true });
+    const file = path.join(day, "rollout-media.jsonl");
+    const ts = (n: number): string => `2026-06-03T19:00:0${n}.000Z`;
+    fs.writeFileSync(
+      file,
+      [
+        { timestamp: ts(0), type: "session_meta", payload: { id: "sess-media" } },
+        { timestamp: ts(1), type: "event_msg", payload: { type: "task_started", turn_id: "t1" } },
+        {
+          timestamp: ts(1),
+          type: "response_item",
+          payload: {
+            type: "tool_search_output",
+            tools: [
+              {
+                type: "namespace",
+                name: "shell",
+                tools: [{ type: "function", name: "exec_command", description: "Run a command." }],
+              },
+            ],
+          },
+        },
+        {
+          timestamp: ts(2),
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: "Look at this" },
+              { type: "input_image", image_url: URI },
+            ],
+          },
+        },
+        {
+          timestamp: ts(3),
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "ok" }],
+          },
+        },
+        { timestamp: ts(3), type: "event_msg", payload: { type: "token_count", info: {} } },
+        { timestamp: ts(4), type: "event_msg", payload: { type: "task_complete", turn_id: "t1" } },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n"),
+    );
+
+    await convertAndMark(file, { config: baseConfig, stoppedTurnId: "t1" });
+
+    const spans = exporter.getFinishedSpans();
+    const root = spans.find((s) => s.name === "Codex Turn");
+
+    expect(JSON.parse(attr(root!, "langfuse.observation.input"))).toEqual([
+      { type: "text", text: "Look at this\n[image image/png ~0KB]" },
+      { type: "image_url", image_url: { url: URI } },
+    ]);
+    expect(attr(root!, "langfuse.observation.metadata.codex.image_count")).toBe("1");
+    expect(attr(root!, "langfuse.observation.metadata.codex.tool_definition_count")).toBe("1");
+
+    const generation = spans.find((s) => obsType(s) === "generation");
+    const input = JSON.parse(attr(generation!, "langfuse.observation.input"));
+    expect(input[0].tools).toEqual([{ name: "exec_command", description: "Run a command." }]);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("nests subagent turns under the spawning turn and marks errors/interruptions", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-parent.jsonl"), { config: baseConfig });

@@ -165,6 +165,19 @@ export type SessionMeta = {
   isSubagentThread?: boolean;
 };
 
+export type ToolDefinition = {
+  name: string;
+  description?: string;
+  parameters?: unknown;
+};
+
+export type SystemPrompt = {
+  baseInstructions?: string;
+  developerMessages: string[];
+  injectedContext: string[];
+  changed: boolean;
+};
+
 export type ToolCall = {
   callId: string;
   name: string;
@@ -198,4 +211,7 @@ export type Turn = {
   completed: boolean;
   aborted: boolean;
   totalUsage?: TokenUsage;
+  systemPrompt?: SystemPrompt;
+  userImages: string[];
+  toolDefinitions: ToolDefinition[];
 };
