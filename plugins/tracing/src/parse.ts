@@ -31,7 +31,6 @@ function extractMessageText(content: MessageContentPart[] | undefined): string {
     .join("\n");
 }
 
-/** Extract reasoning text, skipping encrypted-only reasoning items. */
 function extractReasoning(item: {
   content?: unknown[] | string | null;
   summary?: unknown[];
@@ -81,7 +80,6 @@ function extractToolError(payload: EventMsgPayload): string | undefined {
   return undefined;
 }
 
-/** A turn that is still being assembled. */
 type MutableTurn = Turn & { lastAgentMessage?: string; userInputFallback?: string };
 
 const TURN_OPENING_EVENTS = new Set(["user_message", "item_completed", "agent_message"]);
@@ -98,16 +96,6 @@ function newTurn(startTime: number): MutableTurn {
   };
 }
 
-/**
- * Parse a Codex rollout into session metadata and a list of fully assembled
- * turns.
- *
- * Codex interleaves model I/O (`response_item`) with lifecycle events
- * (`event_msg`). We reconstruct each turn as a sequence of model steps (one per
- * model response, delimited by `token_count` events) plus the tool calls each
- * step issued. Tool execution details (status, exit code, output) arrive later
- * as `*_end` events and are matched back to their call by `call_id`.
- */
 export function parseSession(lines: RolloutLine[]): {
   sessionMeta: SessionMeta;
   turns: Turn[];
@@ -127,8 +115,6 @@ export function parseSession(lines: RolloutLine[]): {
   const ensureTurn = (ts: number): MutableTurn => (turn ??= newTurn(ts));
   const ensureStep = (ts: number) => (step ??= newStep(ts));
 
-  // Rollouts from the transition period can carry both spawn-event formats
-  // for the same child; the thread must be nested exactly once.
   const recordSubagentThread = (threadId: string) => {
     if (!turn!.subagentThreadIds.includes(threadId)) {
       turn!.subagentThreadIds.push(threadId);
@@ -352,9 +338,7 @@ export function parseSession(lines: RolloutLine[]): {
         ) {
           recordSubagentThread(p.agent_thread_id);
         }
-        // MCP tool calls are function calls with a mangled name
-        // (`server__tool`); the begin/end events carry the clean server/tool
-        // split, which makes a much better observation name.
+
         if (
           (et === "mcp_tool_call_begin" || et === "mcp_tool_call_end") &&
           typeof p.call_id === "string"
@@ -398,7 +382,6 @@ export function parseSession(lines: RolloutLine[]): {
     }
   }
 
-  // Trailing, not-yet-completed turn (e.g. session ended mid-response).
   if (turn) finishTurn(lastTimestamp, { completed: false, aborted: false });
 
   return { sessionMeta, turns };

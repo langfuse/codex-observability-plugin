@@ -63,7 +63,6 @@ export type ResponseItemCustomToolCallOutput = {
   output: unknown;
 };
 
-/** Server-side web search performed by the model (no separate output item). */
 export type ResponseItemWebSearchCall = {
   type: "web_search_call";
   id?: string | null;
@@ -72,7 +71,6 @@ export type ResponseItemWebSearchCall = {
   action?: Record<string, unknown> | null;
 };
 
-/** Shell execution for models using the built-in local shell tool. */
 export type ResponseItemLocalShellCall = {
   type: "local_shell_call";
   id?: string | null;
@@ -123,25 +121,18 @@ export type EventMsgPayload = {
   type: string;
   turn_id?: string | null;
   call_id?: string;
-  /** token_count */
   info?: {
     total_token_usage?: TokenUsage;
     last_token_usage?: TokenUsage;
     model_context_window?: number;
   } | null;
-  /** item_completed */
   item?: { type?: string; content?: MessageContentPart[] } | null;
-  /** collab_agent_spawn_end */
   new_thread_id?: string | null;
-  /** sub_agent_activity */
   kind?: string;
   agent_thread_id?: string | null;
-  /** mcp_tool_call_begin / mcp_tool_call_end */
   invocation?: { server?: string; tool?: string; arguments?: unknown } | null;
-  /** web_search_end */
   query?: string;
   action?: Record<string, unknown> | null;
-  /** exec_command_end / patch_apply_end */
   status?: string;
   exit_code?: number;
   stdout?: string;
@@ -159,7 +150,6 @@ export type RolloutLine =
   | { timestamp: string; type: "event_msg"; payload: EventMsgPayload }
   | { timestamp: string; type: string; payload: Record<string, unknown> };
 
-/** Payload Codex passes to the `Stop` hook on stdin. `turn_id` names the turn that stopped. */
 export type HookInput = {
   session_id?: string;
   turn_id?: string | null;
@@ -167,21 +157,14 @@ export type HookInput = {
   hook_event_name?: string;
 };
 
-/** Resolved session-level metadata. */
 export type SessionMeta = {
   sessionId: string;
   cliVersion?: string;
   modelProvider?: string;
   baseInstructions?: string;
-  /**
-   * Whether this rollout belongs to a subagent thread rather than the main
-   * session. Codex marks subagent rollouts with `parent_thread_id` and/or
-   * `thread_source: "subagent"` in `session_meta`.
-   */
   isSubagentThread?: boolean;
 };
 
-/** A single tool invocation, assembled from response items + event_msg. */
 export type ToolCall = {
   callId: string;
   name: string;
@@ -190,11 +173,9 @@ export type ToolCall = {
   endTime?: number;
   output?: unknown;
   error?: string;
-  /** Server/tool split for MCP calls, taken from mcp_tool_call_* events. */
   mcp?: { server: string; tool: string };
 };
 
-/** A single model response within a turn (one LLM call). */
 export type ModelStep = {
   startTime: number;
   endTime: number;
@@ -204,7 +185,6 @@ export type ModelStep = {
   usage?: TokenUsage;
 };
 
-/** A fully assembled Codex turn, ready to convert into Langfuse observations. */
 export type Turn = {
   turnId?: string;
   startTime: number;
@@ -215,9 +195,7 @@ export type Turn = {
   finalOutput?: string;
   steps: ModelStep[];
   subagentThreadIds: string[];
-  /** Whether a `task_complete`/`turn_aborted` event was seen for this turn. */
   completed: boolean;
-  /** Whether the turn ended via `turn_aborted` (user interruption). */
   aborted: boolean;
   totalUsage?: TokenUsage;
 };

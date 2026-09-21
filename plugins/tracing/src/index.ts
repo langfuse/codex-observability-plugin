@@ -24,7 +24,6 @@ export async function runHook(): Promise<void> {
   try {
     hookInput = await readStdin<HookInput>();
   } catch (error) {
-    // No usable payload — nothing we can do.
     return;
   }
 
@@ -80,9 +79,7 @@ export async function runHook(): Promise<void> {
 }
 
 runHook().catch((error) => {
-  // Last-resort guard: fail open unless explicitly requested for testing.
   if (process.env.LANGFUSE_CODEX_DEBUG === "true") {
-    // eslint-disable-next-line no-console
     console.error("[langfuse-codex] fatal:", error);
   }
   if (failOnError) {

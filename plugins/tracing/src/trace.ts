@@ -26,7 +26,6 @@ async function loadSession(file: string): Promise<RolloutLine[]> {
     try {
       lines.push(JSON.parse(trimmed) as RolloutLine);
     } catch {
-      // skip malformed lines rather than aborting the whole upload
     }
   }
   return lines;
@@ -202,7 +201,6 @@ function isTokenCount(value: number | undefined): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-/** Send Codex's inclusive counts using Langfuse's strict OpenAI usage schema. */
 function toUsageDetails(
   usage: TokenUsage | undefined,
 ): LangfuseGenerationAttributes["usageDetails"] {
@@ -259,19 +257,11 @@ function buildGenerationOutput(step: ModelStep): Record<string, unknown> | undef
   return Object.keys(output).length > 0 ? output : undefined;
 }
 
-/**
- * Observation name for a tool call. MCP calls use the clean `server.tool`
- * split from the mcp_tool_call_* events instead of the mangled function name;
- * everything else uses the plain tool name. Call arguments (shell command,
- * search query, …) stay out of the name — they belong to the observation
- * input.
- */
 function toolObservationName(tc: ToolCall): string {
   if (tc.mcp) return `${tc.mcp.server}.${tc.mcp.tool}`;
   return tc.name || "tool";
 }
 
-/** Emit a single turn (and its subagents) as a Langfuse observation tree. */
 async function emitTurn(
   turn: Turn,
   sessionMeta: SessionMeta,
@@ -279,15 +269,12 @@ async function emitTurn(
     config: Config;
     rolloutFile: string;
     parentObservation?: LangfuseObservation;
-    /** Pre-derived trace id for top-level turns (see seededTraceParent). */
     seededParent?: SpanContext;
     subagentIndex: SubagentIndex;
     seenThreadIds: Set<string>;
     unannouncedSubagents?: SubagentRollout[];
   },
 ): Promise<void> {
-  // A turn belongs to a subagent when its rollout is marked as a subagent
-  // thread or when it is being nested under a spawning turn.
   const isSubagent = sessionMeta.isSubagentThread === true || ctx.parentObservation != null;
 
   const root = startObservation(
@@ -352,7 +339,6 @@ async function emitTurn(
           : undefined;
     }
 
-    // Subagent threads spawned by this turn are nested under the turn root.
     const announced: SubagentRollout[] = [];
     for (const threadId of turn.subagentThreadIds) {
       const rollout = ctx.subagentIndex.byThread.get(threadId);
@@ -406,16 +392,6 @@ function emitToolCall(tc: ToolCall, parent: LangfuseObservation, fallbackEnd: nu
   tool.end(new Date(tc.endTime ?? fallbackEnd));
 }
 
-/**
- * Whether a turn is done growing and can be exported exactly once.
- *
- * Only turns Codex gave a `turn_id` qualify: everything else is plumbing that
- * Codex writes between turns (`thread_settings_applied`, injected subagent
- * notifications) and could never be recorded in the sidecar. Such a turn is
- * final once its completion event is on disk, once a later turn has started, or
- * when the `Stop` payload names it — Codex appends `task_complete` only after
- * the hook exits, so the turn that just stopped is always still open on disk.
- */
 function isFinal(
   turn: Turn,
   stoppedTurnId: string | undefined,
@@ -425,16 +401,6 @@ function isFinal(
   return turn.completed || supersededByLaterTurn || turn.turnId === stoppedTurnId;
 }
 
-/**
- * Convert a Codex rollout file into Langfuse traces.
- *
- * Top-level turns each become their own trace (grouped into a Langfuse session
- * via the Codex thread id). Subagent rollouts are nested under the spawning
- * turn via `parentObservation`.
- *
- * Returns the ids of the top-level turns that were emitted, for the caller to
- * record in the sidecar once the exporter has flushed.
- */
 export async function convertRollout(
   rolloutFile: string,
   options: {
@@ -495,11 +461,9 @@ export async function convertRollout(
       continue;
     }
     if (uploaded.has(turn.turnId)) {
-      continue; // already delivered by a previous hook invocation
+      continue;
     }
 
-    // Turn numbering stays 1-based over the full rollout (including turns
-    // skipped by dedup above) so the derived id is stable across hook runs.
     const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
 
     await propagateAttributes(
