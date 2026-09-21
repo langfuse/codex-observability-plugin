@@ -11,6 +11,8 @@ updates:
       langfuse:
         patterns:
           - "@langfuse/*"
+      dev-dependencies:
+        dependency-type: "development"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
