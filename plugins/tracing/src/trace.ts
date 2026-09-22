@@ -375,11 +375,6 @@ function generationInput(
   return messages.length > 0 ? messages : undefined;
 }
 
-const EMIT_IMAGE_MEDIA = (() => {
-  const raw = process.env.LANGFUSE_MEDIA_UPLOAD_ENABLED?.trim().toLowerCase();
-  return raw ? !["false", "0"].includes(raw) : true;
-})();
-
 type ContentPart =
   { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
@@ -432,7 +427,7 @@ async function emitTurn(
   const root = startObservation(
     isSubagent ? "Codex Subagent Turn" : "Codex Turn",
     {
-      input: toMultimodalContent(turn.userInput, EMIT_IMAGE_MEDIA ? turn.userImages : []),
+      input: toMultimodalContent(turn.userInput, turn.userImages),
       output: turn.finalOutput,
       level: turn.aborted ? "WARNING" : undefined,
       statusMessage: turn.aborted ? "Turn interrupted by user" : undefined,
