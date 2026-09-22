@@ -20,14 +20,7 @@ import type {
 } from "./types.js";
 import { isPrimitive, toText } from "./utils.js";
 
-export function describeImage(dataUri: string): string {
-  const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUri);
-  if (!match) return "[image]";
-  const kb = Math.floor((match[2].length * 3) / 4 / 1024);
-  return `[image ${match[1]} ~${kb}KB]`;
-}
-
-export function extractImageUris(content: MessageContentPart[] | undefined): string[] {
+function extractImageUris(content: MessageContentPart[] | undefined): string[] {
   if (!Array.isArray(content)) return [];
   return content
     .map((part) =>
@@ -44,7 +37,6 @@ function extractMessageText(content: MessageContentPart[] | undefined): string {
       if (part.type === "input_text" || part.type === "output_text" || part.type === "text") {
         return typeof part.text === "string" ? part.text : "";
       }
-      if (typeof part.image_url === "string") return describeImage(part.image_url);
       return "";
     })
     .filter(Boolean)

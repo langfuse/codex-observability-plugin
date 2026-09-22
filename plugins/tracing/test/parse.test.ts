@@ -175,7 +175,7 @@ describe("parseSession", () => {
     expect(turns[0].systemPrompt).toBeUndefined();
   });
 
-  it("captures attached images and keeps a marker in the text", () => {
+  it("captures attached images without altering the prompt text", () => {
     const line = (ts: string, type: string, payload: Record<string, unknown>): RolloutLine =>
       ({ timestamp: ts, type, payload }) as RolloutLine;
     const URI = "data:image/png;base64,iVBORw0KGgo=";
@@ -196,7 +196,7 @@ describe("parseSession", () => {
 
     expect(turns).toHaveLength(1);
     expect(turns[0].userImages).toEqual([URI]);
-    expect(turns[0].userInput).toBe("What is wrong here?\n[image image/png ~0KB]");
+    expect(turns[0].userInput).toBe("What is wrong here?");
   });
 
   it("flattens the tool definitions Codex loaded for the session", () => {
