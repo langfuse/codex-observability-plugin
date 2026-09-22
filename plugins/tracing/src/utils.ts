@@ -47,6 +47,5 @@ export function setDebug(enabled: boolean): void {
 }
 export function debugLog(...args: unknown[]): void {
   if (!debugEnabled) return;
-  // eslint-disable-next-line no-console
   console.error("[langfuse-codex]", ...args);
 }
