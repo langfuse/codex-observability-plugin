@@ -239,7 +239,7 @@ Releases go through the tag-triggered workflow, never through a manual `npm publ
 git tag v0.4.0 && git push origin v0.4.0
 ```
 
-The workflow refuses a tag whose name disagrees with either version, then lints, tests, and stages the package on npm with provenance. A maintainer approves the staged publish with 2FA (`npm stage approve <id>`), and the draft GitHub release still has to be published. Finally, point `.agents/plugins/marketplace.json` at the new version, because that pin is what users install.
+The workflow refuses a tag whose name disagrees with either version, then lints, tests, and stages the package on npm with provenance. A maintainer approves the staged publish with 2FA (`npm stage approve <id>`), and the draft GitHub release still has to be published. That is the whole release: `.agents/plugins/marketplace.json` names the package without a version, so Codex resolves the npm `latest` tag and picks the release up on its own. A prerelease published under the `next` tag stays out of the way until it is promoted.
 
 The two versions you bump matter for different things. The one in `package.json` only decides which tarball npm hands out; the one in `plugin.json` is the version Codex installs under, so it names the cache directory (`~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/`) and therefore decides whether an existing install is refreshed at all — an automatic refresh compares the `plugin.json` version against that directory name and stops when they match, while an explicit `codex plugin add` is a force reinstall and updates in place even at an unchanged version. Publishing them out of step ships a package that reports the wrong version.
 
