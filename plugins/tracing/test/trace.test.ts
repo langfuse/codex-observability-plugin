@@ -538,6 +538,53 @@ describe("convertRollout", () => {
     expect(total).toBe(215);
   });
 
+  it("recovers ancestor turn ids when a subagent rollout is converted on its own", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-inherited-probe.jsonl"), { config: baseConfig });
+
+    const turnIdOf = (s: ReadableSpan) => attr(s, "langfuse.observation.metadata.codex.turn_id");
+    const turns = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "Codex Turn" || s.name === "Codex Subagent Turn");
+
+    expect(turns.map(turnIdOf).sort()).toEqual(["turn-inherited-leaf", "turn-inherited-probe"]);
+    expect(turns.map(turnIdOf)).not.toContain("turn-inherited-parent");
+  });
+
+  it("walks the whole ancestor chain for a nested subagent rollout", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-inherited-leaf.jsonl"), { config: baseConfig });
+
+    const turnIdOf = (s: ReadableSpan) => attr(s, "langfuse.observation.metadata.codex.turn_id");
+    const turns = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "Codex Turn" || s.name === "Codex Subagent Turn");
+
+    expect(turns.map(turnIdOf).sort()).toEqual(["turn-inherited-leaf"]);
+  });
+
+  it("keeps a fork's own identity when it replays its parent's session_meta", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-replay-child.jsonl"), { config: baseConfig });
+
+    const turnIdOf = (s: ReadableSpan) => attr(s, "langfuse.observation.metadata.codex.turn_id");
+    const own = exporter
+      .getFinishedSpans()
+      .filter((s) => turnIdOf(s) === "turn-replay-child" && s.name.startsWith("Codex"));
+
+    expect(own).toHaveLength(1);
+    expect(own[0].name).toBe("Codex Subagent Turn");
+    expect(attr(own[0], "langfuse.observation.metadata.codex.thread_id")).toBe(
+      "thread-replay-child",
+    );
+    expect(
+      exporter
+        .getFinishedSpans()
+        .map(turnIdOf)
+        .filter((id) => id === "turn-replay-parent"),
+    ).toEqual([]);
+  });
+
   it("captures web search, local shell, and MCP tool calls with specific names", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-tools-main.jsonl"), { config: baseConfig });

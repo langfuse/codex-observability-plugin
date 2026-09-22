@@ -17,6 +17,7 @@ import { parseArgs, parseSession } from "./parse.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
 import { skillsForToolCall, traceTags } from "./skills.js";
 import type {
+  EventMsgPayload,
   ModelStep,
   RolloutLine,
   SessionMeta,
@@ -45,6 +46,7 @@ async function loadSession(file: string): Promise<RolloutLine[]> {
 
 type SubagentRollout = {
   threadId: string;
+  parentThreadId?: string;
   file: string;
   startTime: number;
   nickname?: string;
@@ -118,6 +120,7 @@ export async function buildSubagentIndex(rolloutFile: string): Promise<SubagentI
       if (index.byThread.has(meta.threadId)) continue;
       const rollout: SubagentRollout = {
         threadId: meta.threadId,
+        parentThreadId: meta.parentThreadId,
         file: full,
         startTime: meta.startTime,
         nickname: meta.nickname,
@@ -559,6 +562,41 @@ function isFinal(
   return turn.completed || supersededByLaterTurn || turn.turnId === stoppedTurnId;
 }
 
+async function readTurnIds(file: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const line of await loadSession(file)) {
+    if (line.type !== "event_msg") continue;
+    const p = line.payload as EventMsgPayload;
+    if (p.type === "task_started" && typeof p.turn_id === "string") ids.add(p.turn_id);
+  }
+  return ids;
+}
+
+async function ancestorTurnIdsOf(
+  sessionMeta: SessionMeta,
+  index: SubagentIndex,
+): Promise<Set<string>> {
+  const owned = new Set<string>();
+  const seen = new Set<string>([sessionMeta.sessionId]);
+  let ancestor = sessionMeta.parentThreadId;
+  while (ancestor && !seen.has(ancestor)) {
+    seen.add(ancestor);
+    const rollout = index.byThread.get(ancestor);
+    if (rollout) {
+      try {
+        const before = owned.size;
+        for (const id of await readTurnIds(rollout.file)) owned.add(id);
+        debugLog(`ancestor ${ancestor} owns ${owned.size - before} turn(s)`);
+      } catch (error) {
+        debugLog(`failed to read ancestor ${ancestor}; not skipping its turns:`, error);
+        break;
+      }
+    }
+    ancestor = rollout?.parentThreadId;
+  }
+  return owned;
+}
+
 export async function convertRollout(
   rolloutFile: string,
   options: {
@@ -603,7 +641,19 @@ export async function convertRollout(
     byTurn.set(i, [...(byTurn.get(i) ?? []), sub]);
   }
 
-  const inheritableTurnIds = new Set(options.ancestorTurnIds);
+  const ancestorTurnIds =
+    options.ancestorTurnIds ??
+    (sessionMeta.isSubagentThread
+      ? await ancestorTurnIdsOf(sessionMeta, subagentIndex)
+      : undefined);
+
+  const isInherited = (turn: Turn): boolean => {
+    if (!turn.turnId || !ancestorTurnIds?.has(turn.turnId)) return false;
+    debugLog(`skipping turn ${turn.turnId}: inherited from an ancestor thread`);
+    return true;
+  };
+
+  const inheritableTurnIds = new Set(ancestorTurnIds);
   for (const turn of turns) {
     if (turn.turnId) inheritableTurnIds.add(turn.turnId);
   }
@@ -611,10 +661,7 @@ export async function convertRollout(
   if (options.parentObservation) {
     for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
       const turn = turns[turnIndex];
-      if (turn.turnId && options.ancestorTurnIds?.has(turn.turnId)) {
-        debugLog(`skipping turn ${turn.turnId}: inherited from an ancestor thread`);
-        continue;
-      }
+      if (isInherited(turn)) continue;
       await emitTurn(turn, sessionMeta, {
         config: options.config,
         rolloutFile,
@@ -634,6 +681,8 @@ export async function convertRollout(
 
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
+
+    if (isInherited(turn)) continue;
 
     if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
       debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
