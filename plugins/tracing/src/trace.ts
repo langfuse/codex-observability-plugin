@@ -94,10 +94,13 @@ async function readSessionMeta(
   }
 }
 
-export async function buildSubagentIndex(rolloutFile: string): Promise<SubagentIndex> {
+export async function buildSubagentIndex(
+  rolloutFile: string,
+  options: { includeEarlierDays?: boolean } = {},
+): Promise<SubagentIndex> {
   const root = path.resolve(path.dirname(rolloutFile), "../../..");
   const fromDay = path.relative(root, path.dirname(rolloutFile));
-  const bounded = /^\d{4}\/\d{2}\/\d{2}$/.test(fromDay);
+  const bounded = !options.includeEarlierDays && /^\d{4}\/\d{2}\/\d{2}$/.test(fromDay);
   const index: SubagentIndex = { byParent: new Map(), byThread: new Map() };
 
   async function walk(dir: string, rel: string): Promise<void> {
@@ -620,7 +623,11 @@ export async function convertRollout(
   }
   debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 
-  const subagentIndex = options.subagentIndex ?? (await buildSubagentIndex(rolloutFile));
+  const subagentIndex =
+    options.subagentIndex ??
+    (await buildSubagentIndex(rolloutFile, {
+      includeEarlierDays: sessionMeta.isSubagentThread === true,
+    }));
   const seenThreadIds = options.seenThreadIds ?? new Set<string>();
   seenThreadIds.add(sessionMeta.sessionId);
 

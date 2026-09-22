@@ -585,6 +585,19 @@ describe("convertRollout", () => {
     ).toEqual([]);
   });
 
+  it("resolves an ancestor that lives in an earlier day directory", async () => {
+    const dir = stageFixtures();
+    const nextDay = path.join(dir, "..", "04", "rollout-replay-nextday.jsonl");
+    await convertRollout(nextDay, { config: baseConfig });
+
+    const turnIdOf = (s: ReadableSpan) => attr(s, "langfuse.observation.metadata.codex.turn_id");
+    const turns = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "Codex Turn" || s.name === "Codex Subagent Turn");
+
+    expect(turns.map(turnIdOf)).toEqual(["turn-nextday-child"]);
+  });
+
   it("captures web search, local shell, and MCP tool calls with specific names", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-tools-main.jsonl"), { config: baseConfig });
