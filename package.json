@@ -39,7 +39,7 @@
     "@opentelemetry/resources": "^2.11.0",
     "@opentelemetry/sdk-trace-base": "^2.11.0",
     "@opentelemetry/sdk-trace-node": "^2.11.0",
-    "zod": "^4.1.13"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
