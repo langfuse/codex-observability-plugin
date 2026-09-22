@@ -494,7 +494,7 @@ async function emitTurn(
       );
 
       for (const tc of step.toolCalls) {
-        emitToolCall(tc, generation, step.endTime);
+        emitToolCall(tc, root, step.endTime);
       }
 
       generation.end(new Date(step.endTime));

@@ -132,13 +132,15 @@ describe("convertRollout", () => {
         completion_tokens_details: { reasoning_tokens: 0 },
       },
     ]);
-    // One tool span, nested under a generation, with the captured command output.
+    // One tool span with the captured command output.
     const tools = spans.filter((s) => obsType(s) === "tool");
     expect(tools).toHaveLength(1);
     expect(tools[0].name).toBe("exec_command");
     expect(attr(tools[0], "langfuse.observation.metadata.codex.tool_name")).toBe("exec_command");
     expect(attr(tools[0], "langfuse.observation.output")).toContain("file1.txt");
-    expect(generations.map((g) => g.spanContext().spanId)).toContain(parentId(tools[0]));
+    expect(parentId(tools[0])).toBe(root!.spanContext().spanId);
+    expect(attr(tools[0], "langfuse.observation.metadata.codex.call_id")).toBe("call-1");
+    expect(attr(generations[0], "langfuse.observation.output")).toContain("call-1");
   });
 
   it("gives each generation the conversation up to that call", async () => {
