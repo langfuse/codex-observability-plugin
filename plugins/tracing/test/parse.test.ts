@@ -61,6 +61,14 @@ describe("parseSession", () => {
     expect(step2.toolCalls).toHaveLength(0);
   });
 
+  it("captures an explicitly invoked skill without letting it leak into the prompt", () => {
+    const { turns } = parseSession(loadFixture("rollout-skills-main.jsonl"));
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].promptSkills).toEqual(["git-workflow"]);
+    expect(turns[0].userInput).toBe("Triage this crash with the bug-mentor skill");
+  });
+
   it("captures subagent threads, tool errors, and interruption", () => {
     const { turns } = parseSession(loadFixture("rollout-parent.jsonl"));
 

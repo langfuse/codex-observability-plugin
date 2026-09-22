@@ -15,6 +15,7 @@ import type { Config } from "./config.js";
 import { currentIdSeed, seedIds } from "./instrumentation.js";
 import { parseArgs, parseSession } from "./parse.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
+import { skillsForToolCall, traceTags } from "./skills.js";
 import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
 import { debugLog, toText, truncate } from "./utils.js";
 
@@ -276,6 +277,8 @@ function buildGenerationOutput(step: ModelStep, clip: Clip): Record<string, unkn
 }
 
 function toolObservationName(tc: ToolCall): string {
+  const skill = skillsForToolCall(tc)[0];
+  if (skill) return `skill:${skill}`;
   if (tc.mcp) return `${tc.mcp.server}.${tc.mcp.tool}`;
   return tc.name || "tool";
 }
@@ -509,12 +512,14 @@ export async function convertRollout(
 
     const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
 
+    const tags = traceTags(options.config, turn);
+
     await propagateAttributes(
       {
         sessionId: sessionMeta.sessionId,
         traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
         ...(options.config.user_id ? { userId: options.config.user_id } : {}),
-        ...(options.config.tags ? { tags: options.config.tags } : {}),
+        ...(tags.length > 0 ? { tags } : {}),
         ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
       },
       async () => {

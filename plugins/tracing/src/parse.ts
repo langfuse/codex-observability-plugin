@@ -1,3 +1,4 @@
+import { skillsForPrompt } from "./skills.js";
 import type {
   EventMsgPayload,
   MessageContentPart,
@@ -91,6 +92,7 @@ function newTurn(startTime: number): MutableTurn {
     endTime: startTime,
     steps: [],
     subagentThreadIds: [],
+    promptSkills: [],
     completed: false,
     aborted: false,
   };
@@ -196,9 +198,12 @@ export function parseSession(lines: RolloutLine[]): {
           const s = ensureStep(ts);
           if (text) s.text = s.text ? `${s.text}\n${text}` : text;
         } else if (msg.role === "user" && text) {
+          for (const name of skillsForPrompt(text)) {
+            if (!turn!.promptSkills.includes(name)) turn!.promptSkills.push(name);
+          }
           if (
             !turn!.userInputFallback &&
-            !/<\/?(environment_context|user_instructions)\b/.test(text) &&
+            !/<\/?(environment_context|user_instructions|skill)\b/.test(text) &&
             !/^# AGENTS\.md instructions for\b/.test(text.trim())
           ) {
             turn!.userInputFallback = text;
