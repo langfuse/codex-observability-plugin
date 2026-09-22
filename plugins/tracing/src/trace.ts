@@ -1,6 +1,7 @@
-import type { Dirent } from "node:fs";
+import { createReadStream, type Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createInterface } from "node:readline";
 
 import {
   createTraceId,
@@ -30,9 +31,9 @@ import type {
 import { debugLog, toText } from "./utils.js";
 
 async function loadSession(file: string): Promise<RolloutLine[]> {
-  const data = await fs.readFile(file, "utf-8");
   const lines: RolloutLine[] = [];
-  for (const raw of data.split("\n")) {
+  const input = createReadStream(file, { encoding: "utf-8" });
+  for await (const raw of createInterface({ input, crlfDelay: Infinity })) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
     try {
