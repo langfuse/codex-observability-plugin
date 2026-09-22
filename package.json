@@ -42,12 +42,12 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "npm": "11.15.0",
-    "prettier": "^3.9.4",
-    "tsdown": "^0.18.0",
-    "typescript": "^5.7.2",
-    "vitest": "^4.0.0"
+    "@types/node": "^26.6.2",
+    "npm": "12.0.2",
+    "prettier": "^3.9.8",
+    "tsdown": "^0.23.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
   },
   "engines": {
     "node": ">=22"
