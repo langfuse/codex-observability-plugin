@@ -225,7 +225,7 @@ The hook fails open: any tracing error is logged and swallowed so it never block
 ```bash
 pnpm install
 pnpm test        # build, then run the test suite
-pnpm run lint    # prettier + tsc + build
+pnpm run lint    # prettier + tsc
 pnpm run build   # bundle the hook to plugins/tracing/dist/index.mjs
 ```
 
