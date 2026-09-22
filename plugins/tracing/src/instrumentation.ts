@@ -1,3 +1,5 @@
+import { createHash, randomBytes } from "node:crypto";
+
 import { LangfuseSpanProcessor } from "@langfuse/otel";
 import { setLangfuseTracerProvider } from "@langfuse/tracing";
 import {
@@ -9,6 +11,30 @@ import {
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 
 import type { Config } from "./config.js";
+
+const TRACE_ID_HEX_CHARS = 32;
+const SPAN_ID_HEX_CHARS = 16;
+
+let idSeed: string | undefined;
+let idCounter = 0;
+
+export function seedIds(seed: string | undefined): void {
+  idSeed = seed;
+  idCounter = 0;
+}
+
+export function currentIdSeed(): string | undefined {
+  return idSeed;
+}
+
+function seededId(kind: "trace" | "span"): string {
+  const hexChars = kind === "trace" ? TRACE_ID_HEX_CHARS : SPAN_ID_HEX_CHARS;
+  if (idSeed === undefined) return randomBytes(hexChars / 2).toString("hex");
+  return createHash("sha256")
+    .update(`${idSeed}:${kind}:${idCounter++}`)
+    .digest("hex")
+    .slice(0, hexChars);
+}
 
 export type Instrumentation = {
   /** Flush buffered spans and tear down the tracer provider. */
@@ -50,6 +76,10 @@ export function setupInstrumentation(config: Config): Instrumentation {
   const provider = new NodeTracerProvider({
     resource: buildResource(),
     spanProcessors: [spanProcessor],
+    idGenerator: {
+      generateTraceId: () => seededId("trace"),
+      generateSpanId: () => seededId("span"),
+    },
   });
   provider.register();
 
