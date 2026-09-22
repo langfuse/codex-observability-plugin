@@ -9,8 +9,9 @@ Once enabled, every Codex turn shows up in Langfuse as a trace you can inspect, 
 After each Codex turn, the plugin reads the session's rollout transcript and uploads it to Langfuse as a [trace](https://langfuse.com/docs/observability/data-model). The structure mirrors how Codex actually works:
 
 - **Turn** (`Codex Turn`, an [agent observation](https://langfuse.com/docs/observability/features/observation-types)) — one trace per turn, from your prompt to the final answer.
-- **Generations** — one per model response within the turn, named `LLM` (or `LLM Subagent` inside subagent threads), with the model recorded on the observation plus reasoning, assistant text, the tool calls it requested, and token usage.
-- **Tool calls** — shell commands, `apply_patch`, `spawn_agent`, MCP tools, web searches, etc., each with its input, output, and error status. MCP calls are named `server.tool`, a command that loads a skill is named `skill:<name>`, and failed commands are flagged as errors.
+- **Generations** — one per model response within the turn, named `LLM` (or `LLM Subagent` inside subagent threads), carrying the model, reasoning, assistant text, tool calls, token usage, and as its input the conversation the model received on that call.
+- **System prompt** — Codex's base prompt, its `developer`-role messages and the injected `<environment_context>`, sent on every generation as a `role: "system"` message and measured on the turn (`codex.system_prompt.total_chars`, …).
+- **Tool calls** — shell commands, `apply_patch`, `spawn_agent`, MCP tools and web searches, each with its input, output and error status, named `server.tool` for MCP, `skill:<name>` for a command that loads a skill, and flagged as errors when they fail.
 - **Subagents** — subagent threads are resolved from their own rollout files and nested under the spawning turn as `Codex Subagent Turn`.
 - **Sessions** — all turns from one Codex session are grouped via the Codex thread id, so you can replay the whole session in Langfuse's [Sessions](https://langfuse.com/docs/observability/features/sessions) view.
 - **Skills** — traces carry a `skill:<name>` tag for every skill a turn invokes, whether you invoked it explicitly or the agent picked it up itself.
