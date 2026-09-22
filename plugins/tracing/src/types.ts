@@ -164,6 +164,7 @@ export type SessionMeta = {
   modelProvider?: string;
   baseInstructions?: string;
   isSubagentThread?: boolean;
+  subagentHistoryStartOrdinal?: number;
 };
 
 export type ToolDefinition = {

@@ -206,6 +206,7 @@ export function parseSession(lines: RolloutLine[]): {
         base_instructions?: { text?: string } | null;
         parent_thread_id?: string | null;
         thread_source?: string | null;
+        subagent_history_start_ordinal?: number;
       };
       sessionMeta = {
         sessionId: typeof p.id === "string" ? p.id : sessionMeta.sessionId,
@@ -213,8 +214,19 @@ export function parseSession(lines: RolloutLine[]): {
         modelProvider: p.model_provider ?? undefined,
         baseInstructions: p.base_instructions?.text,
         isSubagentThread: typeof p.parent_thread_id === "string" || p.thread_source === "subagent",
+        subagentHistoryStartOrdinal:
+          typeof p.subagent_history_start_ordinal === "number"
+            ? p.subagent_history_start_ordinal
+            : undefined,
       };
       continue;
+    }
+
+    if (sessionMeta.subagentHistoryStartOrdinal !== undefined) {
+      const ordinal = (line as { ordinal?: unknown }).ordinal;
+      if (typeof ordinal === "number" && ordinal < sessionMeta.subagentHistoryStartOrdinal) {
+        continue;
+      }
     }
 
     if (line.type === "turn_context") {

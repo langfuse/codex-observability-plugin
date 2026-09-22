@@ -589,6 +589,16 @@ describe("convertRollout", () => {
     expect(total).toBe(215);
   });
 
+  it("skips replayed ancestor turns when a subagent rollout is converted as the root file", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-inherited-leaf.jsonl"), { config: baseConfig });
+
+    const turnIdOf = (s: ReadableSpan) => attr(s, "langfuse.observation.metadata.codex.turn_id");
+    const turns = exporter.getFinishedSpans().filter((s) => s.name === "Codex Subagent Turn");
+
+    expect(turns.map(turnIdOf)).toEqual(["turn-inherited-leaf"]);
+  });
+
   it("captures web search, local shell, and MCP tool calls with specific names", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-tools-main.jsonl"), { config: baseConfig });
