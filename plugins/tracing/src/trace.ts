@@ -16,8 +16,17 @@ import { currentIdSeed, seedIds } from "./instrumentation.js";
 import { parseArgs, parseSession } from "./parse.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
 import { skillsForToolCall, traceTags } from "./skills.js";
-import type { ModelStep, RolloutLine, SessionMeta, TokenUsage, ToolCall, Turn } from "./types.js";
-import { debugLog, toText, truncate } from "./utils.js";
+import type {
+  ModelStep,
+  RolloutLine,
+  SessionMeta,
+  SystemPrompt,
+  TokenUsage,
+  ToolCall,
+  ToolDefinition,
+  Turn,
+} from "./types.js";
+import { debugLog, toText } from "./utils.js";
 
 async function loadSession(file: string): Promise<RolloutLine[]> {
   const data = await fs.readFile(file, "utf-8");
@@ -246,26 +255,10 @@ function toUsageDetails(
   } as unknown as LangfuseGenerationAttributes["usageDetails"];
 }
 
-type Clip = {
-  (value: string): string;
-  (value: unknown): unknown;
-};
-
-function makeClip(maxChars: number): Clip {
-  function clip(value: string): string;
-  function clip(value: unknown): unknown;
-  function clip(value: unknown): unknown {
-    if (typeof value !== "string") return value;
-    const { text, meta } = truncate(value, maxChars);
-    return meta ? `${text}\n…[truncated ${meta.originalLength - text.length} chars]` : text;
-  }
-  return clip;
-}
-
-function buildGenerationOutput(step: ModelStep, clip: Clip): Record<string, unknown> | undefined {
+function buildGenerationOutput(step: ModelStep): Record<string, unknown> | undefined {
   const output: Record<string, unknown> = {};
-  if (step.text) output.content = clip(step.text);
-  if (step.reasoning) output.reasoning = clip(step.reasoning);
+  if (step.text) output.content = step.text;
+  if (step.reasoning) output.reasoning = step.reasoning;
   if (step.toolCalls.length > 0) {
     output.tool_calls = step.toolCalls.map((tc) => ({
       id: tc.callId,
@@ -283,6 +276,134 @@ function toolObservationName(tc: ToolCall): string {
   return tc.name || "tool";
 }
 
+function systemPromptText(systemPrompt: SystemPrompt | undefined): string | undefined {
+  if (!systemPrompt) return undefined;
+  const segments = [
+    systemPrompt.baseInstructions,
+    ...systemPrompt.developerMessages,
+    ...systemPrompt.injectedContext,
+  ].filter((segment): segment is string => typeof segment === "string" && segment.length > 0);
+  return segments.length > 0 ? segments.join("\n\n") : undefined;
+}
+
+function systemPromptMetadata(systemPrompt: SystemPrompt): Record<string, unknown> {
+  const baseChars = systemPrompt.baseInstructions?.length ?? 0;
+  const developerChars = systemPrompt.developerMessages.reduce((n, m) => n + m.length, 0);
+  const injectedChars = systemPrompt.injectedContext.reduce((n, m) => n + m.length, 0);
+  return {
+    "codex.system_prompt.total_chars": baseChars + developerChars + injectedChars,
+    "codex.system_prompt.base_instructions_chars": baseChars,
+    "codex.system_prompt.developer_chars": developerChars,
+    "codex.system_prompt.developer_message_count": systemPrompt.developerMessages.length,
+    "codex.system_prompt.injected_context_chars": injectedChars,
+    "codex.system_prompt.injected_context_count": systemPrompt.injectedContext.length,
+    "codex.system_prompt.changed_this_turn": systemPrompt.changed,
+  };
+}
+
+type ChatMlToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments?: string };
+};
+type ChatMlThinkingPart = { type: "thinking"; content: string };
+type ChatMlMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string }
+  | {
+      role: "assistant";
+      content?: string;
+      thinking?: ChatMlThinkingPart[];
+      tool_calls?: ChatMlToolCall[];
+    }
+  | { role: "tool"; tool_call_id: string; name: string; content: string; is_error?: true };
+
+function assistantMessage(step: ModelStep): ChatMlMessage {
+  return {
+    role: "assistant",
+    ...(step.text ? { content: step.text } : {}),
+    ...(step.reasoning ? { thinking: [{ type: "thinking", content: step.reasoning }] } : {}),
+    ...(step.toolCalls.length > 0
+      ? {
+          tool_calls: step.toolCalls.map((tc) => ({
+            id: tc.callId,
+            type: "function" as const,
+            function: {
+              name: toolObservationName(tc),
+              ...(tc.args !== undefined ? { arguments: toText(tc.args) } : {}),
+            },
+          })),
+        }
+      : {}),
+  };
+}
+
+function toolMessages(step: ModelStep): ChatMlMessage[] {
+  return step.toolCalls.map((tc) => ({
+    role: "tool" as const,
+    tool_call_id: tc.callId,
+    name: toolObservationName(tc),
+    content: tc.output != null ? toText(tc.output) : (tc.error ?? ""),
+    ...(tc.error ? { is_error: true as const } : {}),
+  }));
+}
+
+function turnHistoryMessages(turn: Turn): ChatMlMessage[] {
+  const messages: ChatMlMessage[] = [];
+  if (turn.userInput != null) messages.push({ role: "user", content: turn.userInput });
+  for (const step of turn.steps) {
+    messages.push(assistantMessage(step));
+    messages.push(...toolMessages(step));
+  }
+  return messages;
+}
+
+function generationInput(
+  systemMessage: string | undefined,
+  historyPrefix: ChatMlMessage[],
+  turn: Turn,
+  stepIndex: number,
+): ChatMlMessage[] | undefined {
+  const messages: ChatMlMessage[] = [];
+  if (systemMessage) messages.push({ role: "system", content: systemMessage });
+  messages.push(...historyPrefix);
+  if (turn.userInput != null) messages.push({ role: "user", content: turn.userInput });
+  for (let j = 0; j < stepIndex; j++) {
+    messages.push(assistantMessage(turn.steps[j]));
+    messages.push(...toolMessages(turn.steps[j]));
+  }
+  return messages.length > 0 ? messages : undefined;
+}
+
+type ContentPart =
+  { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+
+function validDataUri(uri: string): boolean {
+  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]+={0,2})$/.exec(uri);
+  return match !== null && !match[1].includes(";");
+}
+
+function toMultimodalContent(
+  text: string | undefined,
+  images: readonly string[],
+): string | ContentPart[] | undefined {
+  const urls = images.filter(validDataUri);
+  if (urls.length === 0) return text;
+  return [
+    ...(text ? [{ type: "text" as const, text }] : []),
+    ...urls.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+  ];
+}
+
+function attachToolDefinitions(
+  input: ChatMlMessage[] | undefined,
+  tools: ToolDefinition[],
+): unknown {
+  if (!input || tools.length === 0) return input;
+  const [first, ...rest] = input;
+  return first ? [{ ...first, tools }, ...rest] : input;
+}
+
 async function emitTurn(
   turn: Turn,
   sessionMeta: SessionMeta,
@@ -290,16 +411,14 @@ async function emitTurn(
     config: Config;
     rolloutFile: string;
     parentObservation?: LangfuseObservation;
-    /** Pre-derived trace id for top-level turns (see seededTraceParent). */
     seededParent?: SpanContext;
     subagentIndex: SubagentIndex;
     seenThreadIds: Set<string>;
     unannouncedSubagents?: SubagentRollout[];
     inheritableTurnIds?: ReadonlySet<string>;
+    historyPrefix?: ChatMlMessage[];
   },
 ): Promise<void> {
-  const clip = makeClip(ctx.config.max_chars);
-
   const isSubagent = sessionMeta.isSubagentThread === true || ctx.parentObservation != null;
 
   const outerSeed = currentIdSeed();
@@ -308,8 +427,8 @@ async function emitTurn(
   const root = startObservation(
     isSubagent ? "Codex Subagent Turn" : "Codex Turn",
     {
-      input: turn.userInput != null ? clip(turn.userInput) : undefined,
-      output: turn.finalOutput != null ? clip(turn.finalOutput) : undefined,
+      input: toMultimodalContent(turn.userInput, turn.userImages),
+      output: turn.finalOutput,
       level: turn.aborted ? "WARNING" : undefined,
       statusMessage: turn.aborted ? "Turn interrupted by user" : undefined,
       metadata: {
@@ -321,6 +440,11 @@ async function emitTurn(
         "codex.cli_version": sessionMeta.cliVersion,
         "codex.aborted": turn.aborted,
         "codex.tool_call_count": turn.steps.reduce((n, s) => n + s.toolCalls.length, 0),
+        ...(turn.systemPrompt ? systemPromptMetadata(turn.systemPrompt) : {}),
+        ...(turn.userImages.length ? { "codex.image_count": turn.userImages.length } : {}),
+        ...(turn.toolDefinitions.length
+          ? { "codex.tool_definition_count": turn.toolDefinitions.length }
+          : {}),
       },
     },
     {
@@ -332,20 +456,19 @@ async function emitTurn(
 
   let failure: unknown;
   try {
-    let previousToolResults: unknown = undefined;
+    const systemMessage = systemPromptText(turn.systemPrompt);
+    const historyPrefix = ctx.historyPrefix ?? [];
 
     for (let i = 0; i < turn.steps.length; i++) {
       const step = turn.steps[i];
       const generation = startObservation(
         isSubagent ? "LLM Subagent" : "LLM",
         {
-          input:
-            i === 0
-              ? turn.userInput != null
-                ? clip(turn.userInput)
-                : undefined
-              : previousToolResults,
-          output: buildGenerationOutput(step, clip),
+          input: attachToolDefinitions(
+            generationInput(systemMessage, historyPrefix, turn, i),
+            turn.toolDefinitions,
+          ),
+          output: buildGenerationOutput(step),
           model: turn.model,
           ...(turn.reasoningEffort
             ? { modelParameters: { reasoning_effort: turn.reasoningEffort } }
@@ -364,19 +487,10 @@ async function emitTurn(
       );
 
       for (const tc of step.toolCalls) {
-        emitToolCall(tc, generation, clip, step.endTime);
+        emitToolCall(tc, generation, step.endTime);
       }
 
       generation.end(new Date(step.endTime));
-
-      previousToolResults =
-        step.toolCalls.length > 0
-          ? step.toolCalls.map((tc) => ({
-              name: tc.name,
-              output: tc.output != null ? clip(toText(tc.output)) : undefined,
-              ...(tc.error ? { error: clip(tc.error) } : {}),
-            }))
-          : undefined;
     }
 
     const announced: SubagentRollout[] = [];
@@ -406,9 +520,9 @@ async function emitTurn(
     debugLog(`failed to convert turn ${turn.turnId ?? "(no turn id)"}:`, error);
     root.update({
       level: "ERROR",
-      statusMessage: clip(
-        `Trace conversion failed: ${error instanceof Error ? error.message : String(error)}`,
-      ),
+      statusMessage: `Trace conversion failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     });
   }
 
@@ -417,19 +531,14 @@ async function emitTurn(
   if (failure && ctx.config.fail_on_error) throw failure;
 }
 
-function emitToolCall(
-  tc: ToolCall,
-  parent: LangfuseObservation,
-  clip: Clip,
-  fallbackEnd: number,
-): void {
+function emitToolCall(tc: ToolCall, parent: LangfuseObservation, fallbackEnd: number): void {
   const tool = startObservation(
     toolObservationName(tc),
     {
       input: tc.args,
-      output: tc.output != null ? clip(toText(tc.output)) : undefined,
+      output: tc.output != null ? toText(tc.output) : undefined,
       level: tc.error ? "ERROR" : undefined,
-      statusMessage: tc.error ? clip(tc.error) : undefined,
+      statusMessage: tc.error,
       metadata: { "codex.call_id": tc.callId, "codex.tool_name": tc.name || "tool" },
     },
     {
@@ -462,6 +571,15 @@ export async function convertRollout(
   },
 ): Promise<string[]> {
   const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
+
+  const historyPrefixes: ChatMlMessage[][] = [];
+  {
+    const seen: ChatMlMessage[] = [];
+    for (const turn of turns) {
+      historyPrefixes.push([...seen]);
+      seen.push(...turnHistoryMessages(turn));
+    }
+  }
   debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 
   const subagentIndex = options.subagentIndex ?? (await buildSubagentIndex(rolloutFile));
@@ -505,6 +623,7 @@ export async function convertRollout(
         seenThreadIds,
         unannouncedSubagents: byTurn.get(turnIndex),
         inheritableTurnIds,
+        historyPrefix: historyPrefixes[turnIndex],
       });
     }
     return [];
@@ -521,7 +640,7 @@ export async function convertRollout(
       continue;
     }
     if (uploaded.has(turn.turnId)) {
-      continue; // already delivered by a previous hook invocation
+      continue;
     }
 
     const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
@@ -545,6 +664,7 @@ export async function convertRollout(
           seenThreadIds,
           unannouncedSubagents: byTurn.get(turnIndex),
           inheritableTurnIds,
+          historyPrefix: historyPrefixes[turnIndex],
         });
       },
     );

@@ -11,12 +11,30 @@ import type {
   ResponseItemWebSearchCall,
   RolloutLine,
   SessionMeta,
+  SystemPrompt,
+  ToolDefinition,
   TokenUsage,
   ToolCall,
   Turn,
   TurnContextPayload,
 } from "./types.js";
 import { isPrimitive, toText } from "./utils.js";
+
+export function describeImage(dataUri: string): string {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUri);
+  if (!match) return "[image]";
+  const kb = Math.floor((match[2].length * 3) / 4 / 1024);
+  return `[image ${match[1]} ~${kb}KB]`;
+}
+
+export function extractImageUris(content: MessageContentPart[] | undefined): string[] {
+  if (!Array.isArray(content)) return [];
+  return content
+    .map((part) =>
+      part && typeof part === "object" && typeof part.image_url === "string" ? part.image_url : "",
+    )
+    .filter(Boolean);
+}
 
 function extractMessageText(content: MessageContentPart[] | undefined): string {
   if (!Array.isArray(content)) return "";
@@ -26,6 +44,7 @@ function extractMessageText(content: MessageContentPart[] | undefined): string {
       if (part.type === "input_text" || part.type === "output_text" || part.type === "text") {
         return typeof part.text === "string" ? part.text : "";
       }
+      if (typeof part.image_url === "string") return describeImage(part.image_url);
       return "";
     })
     .filter(Boolean)
@@ -93,6 +112,8 @@ function newTurn(startTime: number): MutableTurn {
     steps: [],
     subagentThreadIds: [],
     promptSkills: [],
+    userImages: [],
+    toolDefinitions: [],
     completed: false,
     aborted: false,
   };
@@ -109,6 +130,29 @@ export function parseSession(lines: RolloutLine[]): {
   let step: ModelStep | null = null;
   let toolCallsById = new Map<string, ToolCall>();
   let lastTimestamp = Date.now();
+
+  const developerMessages: string[] = [];
+  const injectedContext: string[] = [];
+  const toolDefinitions: ToolDefinition[] = [];
+  let exportedSegmentCount = 0;
+
+  const collect = (into: string[], text: string) => {
+    if (!into.includes(text)) into.push(text);
+  };
+
+  const systemPromptFor = (): SystemPrompt | undefined => {
+    const base = sessionMeta.baseInstructions;
+    const segmentCount = (base ? 1 : 0) + developerMessages.length + injectedContext.length;
+    if (segmentCount === 0) return undefined;
+    const snapshot: SystemPrompt = {
+      baseInstructions: base,
+      developerMessages: [...developerMessages],
+      injectedContext: [...injectedContext],
+      changed: segmentCount !== exportedSegmentCount,
+    };
+    exportedSegmentCount = segmentCount;
+    return snapshot;
+  };
 
   function newStep(startTime: number): ModelStep {
     return { startTime, endTime: startTime, toolCalls: [] };
@@ -147,7 +191,11 @@ export function parseSession(lines: RolloutLine[]): {
       turn.finalOutput == null &&
       turn.steps.length === 0 &&
       turn.subagentThreadIds.length === 0;
-    if (!isUnannouncedAndEmpty) turns.push(turn);
+    if (!isUnannouncedAndEmpty) {
+      turn.systemPrompt = systemPromptFor();
+      turn.toolDefinitions = [...toolDefinitions];
+      turns.push(turn);
+    }
     turn = null;
     toolCallsById = new Map();
   };
@@ -194,18 +242,26 @@ export function parseSession(lines: RolloutLine[]): {
       if (p.type === "message") {
         const msg = p as unknown as ResponseItemMessage;
         const text = extractMessageText(msg.content as MessageContentPart[]);
+        if (msg.role === "user") {
+          for (const uri of extractImageUris(msg.content as MessageContentPart[])) {
+            if (!turn!.userImages.includes(uri)) turn!.userImages.push(uri);
+          }
+        }
         if (msg.role === "assistant") {
           const s = ensureStep(ts);
           if (text) s.text = s.text ? `${s.text}\n${text}` : text;
+        } else if (msg.role === "developer" && text) {
+          collect(developerMessages, text);
         } else if (msg.role === "user" && text) {
           for (const name of skillsForPrompt(text)) {
             if (!turn!.promptSkills.includes(name)) turn!.promptSkills.push(name);
           }
-          if (
-            !turn!.userInputFallback &&
-            !/<\/?(environment_context|user_instructions|skill)\b/.test(text) &&
-            !/^# AGENTS\.md instructions for\b/.test(text.trim())
-          ) {
+          const isInjectedContext =
+            /<\/?(environment_context|user_instructions|skill)\b/.test(text) ||
+            /^# AGENTS\.md instructions for\b/.test(text.trim());
+          if (isInjectedContext) {
+            collect(injectedContext, text);
+          } else if (!turn!.userInputFallback) {
             turn!.userInputFallback = text;
           }
         }
@@ -273,6 +329,24 @@ export function parseSession(lines: RolloutLine[]): {
                 ? (spawned as { agent_id?: unknown }).agent_id
                 : undefined;
             if (typeof agentId === "string" && agentId) recordSubagentThread(agentId);
+          }
+        }
+      } else if (p.type === "tool_search_output") {
+        const namespaces = Array.isArray(p.tools) ? p.tools : [];
+        for (const ns of namespaces) {
+          if (!ns || typeof ns !== "object") continue;
+          const entry = ns as { type?: string; tools?: unknown[] } & ToolDefinition;
+          const nested = Array.isArray(entry.tools) ? entry.tools : [entry];
+          for (const raw of nested) {
+            if (!raw || typeof raw !== "object") continue;
+            const tool = raw as { name?: unknown; description?: unknown; parameters?: unknown };
+            if (typeof tool.name !== "string" || !tool.name) continue;
+            if (toolDefinitions.some((known) => known.name === tool.name)) continue;
+            toolDefinitions.push({
+              name: tool.name,
+              ...(typeof tool.description === "string" ? { description: tool.description } : {}),
+              ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {}),
+            });
           }
         }
       } else if (p.type === "reasoning") {

@@ -40,6 +40,12 @@ describe("parseSession", () => {
     expect(turn.userInput).toBe("List the files in the repo");
     expect(turn.finalOutput).toBe("There are two files: file1.txt and file2.txt.");
     expect(turn.totalUsage?.total_tokens).toBe(300);
+    expect(turn.systemPrompt).toEqual({
+      baseInstructions: "You are Codex.",
+      developerMessages: ["<environment_context>cwd=/repo</environment_context>"],
+      injectedContext: [],
+      changed: true,
+    });
 
     // Two model steps: (reasoning + tool call) then (final assistant message).
     expect(turn.steps).toHaveLength(2);
@@ -67,6 +73,171 @@ describe("parseSession", () => {
     expect(turns).toHaveLength(1);
     expect(turns[0].promptSkills).toEqual(["git-workflow"]);
     expect(turns[0].userInput).toBe("Triage this crash with the bug-mentor skill");
+  });
+
+  it("carries the session system prompt onto every turn it stays in context for", () => {
+    const line = (ts: string, type: string, payload: Record<string, unknown>): RolloutLine =>
+      ({ timestamp: ts, type, payload }) as RolloutLine;
+    const developer = (ts: string, text: string): RolloutLine =>
+      line(ts, "response_item", {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text }],
+      });
+    const turn = (ts: string, id: string): RolloutLine[] => [
+      line(ts, "event_msg", { type: "task_started", turn_id: id }),
+      line(ts, "event_msg", { type: "user_message", message: `ask ${id}` }),
+      line(ts, "event_msg", { type: "task_complete", turn_id: id }),
+    ];
+
+    const { turns } = parseSession([
+      line("2026-06-03T14:00:00.000Z", "session_meta", {
+        id: "s",
+        base_instructions: { text: "You are Codex." },
+      }),
+      ...turn("2026-06-03T14:00:01.000Z", "t1").slice(0, 2),
+      developer("2026-06-03T14:00:02.000Z", "<skills_instructions>skills</skills_instructions>"),
+      line("2026-06-03T14:00:03.000Z", "event_msg", { type: "task_complete", turn_id: "t1" }),
+      ...turn("2026-06-03T14:00:04.000Z", "t2"),
+      ...turn("2026-06-03T14:00:05.000Z", "t3").slice(0, 2),
+      developer("2026-06-03T14:00:06.000Z", "<multi_agent_mode>off</multi_agent_mode>"),
+      line("2026-06-03T14:00:07.000Z", "event_msg", { type: "task_complete", turn_id: "t3" }),
+    ]);
+
+    expect(turns.map((t) => t.turnId)).toEqual(["t1", "t2", "t3"]);
+
+    expect(turns[0].systemPrompt).toEqual({
+      baseInstructions: "You are Codex.",
+      developerMessages: ["<skills_instructions>skills</skills_instructions>"],
+      injectedContext: [],
+      changed: true,
+    });
+    expect(turns[1].systemPrompt).toEqual({
+      baseInstructions: "You are Codex.",
+      developerMessages: ["<skills_instructions>skills</skills_instructions>"],
+      injectedContext: [],
+      changed: false,
+    });
+    expect(turns[2].systemPrompt).toEqual({
+      baseInstructions: "You are Codex.",
+      developerMessages: [
+        "<skills_instructions>skills</skills_instructions>",
+        "<multi_agent_mode>off</multi_agent_mode>",
+      ],
+      injectedContext: [],
+      changed: true,
+    });
+  });
+
+  it("traces injected context without letting it become the turn input", () => {
+    const line = (ts: string, type: string, payload: Record<string, unknown>): RolloutLine =>
+      ({ timestamp: ts, type, payload }) as RolloutLine;
+    const userMessage = (ts: string, text: string): RolloutLine =>
+      line(ts, "response_item", {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text }],
+      });
+    const ENV = "<environment_context><cwd>/repo</cwd><shell>zsh</shell></environment_context>";
+
+    const { turns } = parseSession([
+      line("2026-06-03T16:00:00.000Z", "session_meta", { id: "s" }),
+      line("2026-06-03T16:00:01.000Z", "event_msg", { type: "task_started", turn_id: "t1" }),
+      userMessage("2026-06-03T16:00:02.000Z", ENV),
+      userMessage("2026-06-03T16:00:03.000Z", "What does this repo do?"),
+      line("2026-06-03T16:00:04.000Z", "event_msg", { type: "task_complete", turn_id: "t1" }),
+    ]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].userInput).toBe("What does this repo do?");
+    expect(turns[0].systemPrompt?.injectedContext).toEqual([ENV]);
+    expect(turns[0].systemPrompt?.developerMessages).toEqual([]);
+  });
+
+  it("does not let a developer message between turns create a turn of its own", () => {
+    const line = (ts: string, type: string, payload: Record<string, unknown>): RolloutLine =>
+      ({ timestamp: ts, type, payload }) as RolloutLine;
+
+    const { turns } = parseSession([
+      line("2026-06-03T15:00:00.000Z", "session_meta", { id: "s" }),
+      line("2026-06-03T15:00:01.000Z", "event_msg", { type: "task_started", turn_id: "t1" }),
+      line("2026-06-03T15:00:02.000Z", "event_msg", { type: "user_message", message: "hi" }),
+      line("2026-06-03T15:00:03.000Z", "event_msg", { type: "task_complete", turn_id: "t1" }),
+      line("2026-06-03T15:00:04.000Z", "response_item", {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "<multi_agent_mode>off</multi_agent_mode>" }],
+      }),
+    ]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].turnId).toBe("t1");
+    expect(turns[0].systemPrompt).toBeUndefined();
+  });
+
+  it("captures attached images and keeps a marker in the text", () => {
+    const line = (ts: string, type: string, payload: Record<string, unknown>): RolloutLine =>
+      ({ timestamp: ts, type, payload }) as RolloutLine;
+    const URI = "data:image/png;base64,iVBORw0KGgo=";
+
+    const { turns } = parseSession([
+      line("2026-06-03T17:00:00.000Z", "session_meta", { id: "s" }),
+      line("2026-06-03T17:00:01.000Z", "event_msg", { type: "task_started", turn_id: "t1" }),
+      line("2026-06-03T17:00:02.000Z", "response_item", {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "What is wrong here?" },
+          { type: "input_image", image_url: URI, detail: "high" },
+        ],
+      }),
+      line("2026-06-03T17:00:03.000Z", "event_msg", { type: "task_complete", turn_id: "t1" }),
+    ]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].userImages).toEqual([URI]);
+    expect(turns[0].userInput).toBe("What is wrong here?\n[image image/png ~0KB]");
+  });
+
+  it("flattens the tool definitions Codex loaded for the session", () => {
+    const line = (ts: string, type: string, payload: Record<string, unknown>): RolloutLine =>
+      ({ timestamp: ts, type, payload }) as RolloutLine;
+
+    const { turns } = parseSession([
+      line("2026-06-03T18:00:00.000Z", "session_meta", { id: "s" }),
+      line("2026-06-03T18:00:01.000Z", "event_msg", { type: "task_started", turn_id: "t1" }),
+      line("2026-06-03T18:00:02.000Z", "response_item", {
+        type: "tool_search_output",
+        tools: [
+          {
+            type: "namespace",
+            name: "codex_app",
+            description: "Tools in the codex_app namespace.",
+            tools: [
+              {
+                type: "function",
+                name: "automation_update",
+                description: "Manage recurring automations.",
+                parameters: { type: "object" },
+                strict: false,
+              },
+              { type: "function", name: "automation_list", description: "List automations." },
+            ],
+          },
+        ],
+      }),
+      line("2026-06-03T18:00:03.000Z", "event_msg", { type: "user_message", message: "go" }),
+      line("2026-06-03T18:00:04.000Z", "event_msg", { type: "task_complete", turn_id: "t1" }),
+    ]);
+
+    expect(turns[0].toolDefinitions).toEqual([
+      {
+        name: "automation_update",
+        description: "Manage recurring automations.",
+        parameters: { type: "object" },
+      },
+      { name: "automation_list", description: "List automations." },
+    ]);
   });
 
   it("captures subagent threads, tool errors, and interruption", () => {
