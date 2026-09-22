@@ -111,11 +111,33 @@ function newTurn(startTime: number): MutableTurn {
   };
 }
 
+function sessionMetaFrom(line: RolloutLine): SessionMeta {
+  const p = line.payload as RolloutLine["payload"] & {
+    id?: string;
+    cli_version?: string;
+    model_provider?: string | null;
+    base_instructions?: { text?: string } | null;
+    parent_thread_id?: string | null;
+    thread_source?: string | null;
+  };
+  return {
+    sessionId: typeof p.id === "string" ? p.id : "unknown",
+    cliVersion: p.cli_version,
+    modelProvider: p.model_provider ?? undefined,
+    baseInstructions: p.base_instructions?.text,
+    isSubagentThread: typeof p.parent_thread_id === "string" || p.thread_source === "subagent",
+    parentThreadId: p.parent_thread_id ? p.parent_thread_id : undefined,
+  };
+}
+
 export function parseSession(lines: RolloutLine[]): {
   sessionMeta: SessionMeta;
   turns: Turn[];
 } {
-  let sessionMeta: SessionMeta = { sessionId: "unknown" };
+  const ownHeader = lines.find((line) => line.type === "session_meta");
+  const sessionMeta: SessionMeta = ownHeader
+    ? sessionMetaFrom(ownHeader)
+    : { sessionId: "unknown" };
   const turns: Turn[] = [];
 
   let turn: MutableTurn | null = null;
@@ -197,25 +219,6 @@ export function parseSession(lines: RolloutLine[]): {
       ? Date.parse(line.timestamp)
       : lastTimestamp;
     lastTimestamp = ts;
-
-    if (line.type === "session_meta") {
-      const p = line.payload as RolloutLine["payload"] & {
-        id?: string;
-        cli_version?: string;
-        model_provider?: string | null;
-        base_instructions?: { text?: string } | null;
-        parent_thread_id?: string | null;
-        thread_source?: string | null;
-      };
-      sessionMeta = {
-        sessionId: typeof p.id === "string" ? p.id : sessionMeta.sessionId,
-        cliVersion: p.cli_version,
-        modelProvider: p.model_provider ?? undefined,
-        baseInstructions: p.base_instructions?.text,
-        isSubagentThread: typeof p.parent_thread_id === "string" || p.thread_source === "subagent",
-      };
-      continue;
-    }
 
     if (line.type === "turn_context") {
       const t = ensureTurn(ts);

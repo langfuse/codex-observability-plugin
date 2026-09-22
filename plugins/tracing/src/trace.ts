@@ -17,6 +17,7 @@ import { parseArgs, parseSession } from "./parse.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
 import { skillsForToolCall, traceTags } from "./skills.js";
 import type {
+  EventMsgPayload,
   ModelStep,
   RolloutLine,
   SessionMeta,
@@ -45,6 +46,7 @@ async function loadSession(file: string): Promise<RolloutLine[]> {
 
 type SubagentRollout = {
   threadId: string;
+  parentThreadId?: string;
   file: string;
   startTime: number;
   nickname?: string;
@@ -92,10 +94,13 @@ async function readSessionMeta(
   }
 }
 
-export async function buildSubagentIndex(rolloutFile: string): Promise<SubagentIndex> {
+export async function buildSubagentIndex(
+  rolloutFile: string,
+  options: { includeEarlierDays?: boolean } = {},
+): Promise<SubagentIndex> {
   const root = path.resolve(path.dirname(rolloutFile), "../../..");
   const fromDay = path.relative(root, path.dirname(rolloutFile));
-  const bounded = /^\d{4}\/\d{2}\/\d{2}$/.test(fromDay);
+  const bounded = !options.includeEarlierDays && /^\d{4}\/\d{2}\/\d{2}$/.test(fromDay);
   const index: SubagentIndex = { byParent: new Map(), byThread: new Map() };
 
   async function walk(dir: string, rel: string): Promise<void> {
@@ -118,6 +123,7 @@ export async function buildSubagentIndex(rolloutFile: string): Promise<SubagentI
       if (index.byThread.has(meta.threadId)) continue;
       const rollout: SubagentRollout = {
         threadId: meta.threadId,
+        parentThreadId: meta.parentThreadId,
         file: full,
         startTime: meta.startTime,
         nickname: meta.nickname,
@@ -560,6 +566,41 @@ function isFinal(
   return turn.completed || supersededByLaterTurn || turn.turnId === stoppedTurnId;
 }
 
+async function readTurnIds(file: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const line of await loadSession(file)) {
+    if (line.type !== "event_msg") continue;
+    const p = line.payload as EventMsgPayload;
+    if (p.type === "task_started" && typeof p.turn_id === "string") ids.add(p.turn_id);
+  }
+  return ids;
+}
+
+async function ancestorTurnIdsOf(
+  sessionMeta: SessionMeta,
+  index: SubagentIndex,
+): Promise<Set<string>> {
+  const owned = new Set<string>();
+  const seen = new Set<string>([sessionMeta.sessionId]);
+  let ancestor = sessionMeta.parentThreadId;
+  while (ancestor && !seen.has(ancestor)) {
+    seen.add(ancestor);
+    const rollout = index.byThread.get(ancestor);
+    if (rollout) {
+      try {
+        const before = owned.size;
+        for (const id of await readTurnIds(rollout.file)) owned.add(id);
+        debugLog(`ancestor ${ancestor} owns ${owned.size - before} turn(s)`);
+      } catch (error) {
+        debugLog(`failed to read ancestor ${ancestor}; not skipping its turns:`, error);
+        break;
+      }
+    }
+    ancestor = rollout?.parentThreadId;
+  }
+  return owned;
+}
+
 export async function convertRollout(
   rolloutFile: string,
   options: {
@@ -583,7 +624,11 @@ export async function convertRollout(
   }
   debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 
-  const subagentIndex = options.subagentIndex ?? (await buildSubagentIndex(rolloutFile));
+  const subagentIndex =
+    options.subagentIndex ??
+    (await buildSubagentIndex(rolloutFile, {
+      includeEarlierDays: sessionMeta.isSubagentThread === true,
+    }));
   const seenThreadIds = options.seenThreadIds ?? new Set<string>();
   seenThreadIds.add(sessionMeta.sessionId);
 
@@ -604,7 +649,28 @@ export async function convertRollout(
     byTurn.set(i, [...(byTurn.get(i) ?? []), sub]);
   }
 
-  const inheritableTurnIds = new Set(options.ancestorTurnIds);
+  const ancestorTurnIds =
+    options.ancestorTurnIds ??
+    (sessionMeta.isSubagentThread
+      ? await ancestorTurnIdsOf(sessionMeta, subagentIndex)
+      : undefined);
+
+  const carriedSubagents: SubagentRollout[] = [];
+  const subagentsFor = (turnIndex: number): SubagentRollout[] | undefined => {
+    const own = byTurn.get(turnIndex) ?? [];
+    const all = carriedSubagents.length > 0 ? [...carriedSubagents, ...own] : own;
+    carriedSubagents.length = 0;
+    return all.length > 0 ? all : undefined;
+  };
+
+  const skipInherited = (turn: Turn, turnIndex: number): boolean => {
+    if (!turn.turnId || !ancestorTurnIds?.has(turn.turnId)) return false;
+    debugLog(`skipping turn ${turn.turnId}: inherited from an ancestor thread`);
+    carriedSubagents.push(...(byTurn.get(turnIndex) ?? []));
+    return true;
+  };
+
+  const inheritableTurnIds = new Set(ancestorTurnIds);
   for (const turn of turns) {
     if (turn.turnId) inheritableTurnIds.add(turn.turnId);
   }
@@ -612,17 +678,14 @@ export async function convertRollout(
   if (options.parentObservation) {
     for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
       const turn = turns[turnIndex];
-      if (turn.turnId && options.ancestorTurnIds?.has(turn.turnId)) {
-        debugLog(`skipping turn ${turn.turnId}: inherited from an ancestor thread`);
-        continue;
-      }
+      if (skipInherited(turn, turnIndex)) continue;
       await emitTurn(turn, sessionMeta, {
         config: options.config,
         rolloutFile,
         parentObservation: options.parentObservation,
         subagentIndex,
         seenThreadIds,
-        unannouncedSubagents: byTurn.get(turnIndex),
+        unannouncedSubagents: subagentsFor(turnIndex),
         inheritableTurnIds,
         historyPrefix: historyPrefixes[turnIndex],
       });
@@ -635,6 +698,8 @@ export async function convertRollout(
 
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
+
+    if (skipInherited(turn, turnIndex)) continue;
 
     if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
       debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
@@ -663,7 +728,7 @@ export async function convertRollout(
           seededParent,
           subagentIndex,
           seenThreadIds,
-          unannouncedSubagents: byTurn.get(turnIndex),
+          unannouncedSubagents: subagentsFor(turnIndex),
           inheritableTurnIds,
           historyPrefix: historyPrefixes[turnIndex],
         });
