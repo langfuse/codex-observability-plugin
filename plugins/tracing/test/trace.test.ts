@@ -585,6 +585,18 @@ describe("convertRollout", () => {
     ).toEqual([]);
   });
 
+  it("carries a skipped ancestor turn's unannounced subagents to an owned turn", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-replay-child.jsonl"), { config: baseConfig });
+
+    const turnIdOf = (s: ReadableSpan) => attr(s, "langfuse.observation.metadata.codex.turn_id");
+    const turns = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "Codex Turn" || s.name === "Codex Subagent Turn");
+
+    expect(turns.map(turnIdOf).sort()).toEqual(["turn-replay-child", "turn-replay-grand"]);
+  });
+
   it("resolves an ancestor that lives in an earlier day directory", async () => {
     const dir = stageFixtures();
     const nextDay = path.join(dir, "..", "04", "rollout-replay-nextday.jsonl");

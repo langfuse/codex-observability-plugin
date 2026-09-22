@@ -654,9 +654,18 @@ export async function convertRollout(
       ? await ancestorTurnIdsOf(sessionMeta, subagentIndex)
       : undefined);
 
-  const isInherited = (turn: Turn): boolean => {
+  const carriedSubagents: SubagentRollout[] = [];
+  const subagentsFor = (turnIndex: number): SubagentRollout[] | undefined => {
+    const own = byTurn.get(turnIndex) ?? [];
+    const all = carriedSubagents.length > 0 ? [...carriedSubagents, ...own] : own;
+    carriedSubagents.length = 0;
+    return all.length > 0 ? all : undefined;
+  };
+
+  const skipInherited = (turn: Turn, turnIndex: number): boolean => {
     if (!turn.turnId || !ancestorTurnIds?.has(turn.turnId)) return false;
     debugLog(`skipping turn ${turn.turnId}: inherited from an ancestor thread`);
+    carriedSubagents.push(...(byTurn.get(turnIndex) ?? []));
     return true;
   };
 
@@ -668,14 +677,14 @@ export async function convertRollout(
   if (options.parentObservation) {
     for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
       const turn = turns[turnIndex];
-      if (isInherited(turn)) continue;
+      if (skipInherited(turn, turnIndex)) continue;
       await emitTurn(turn, sessionMeta, {
         config: options.config,
         rolloutFile,
         parentObservation: options.parentObservation,
         subagentIndex,
         seenThreadIds,
-        unannouncedSubagents: byTurn.get(turnIndex),
+        unannouncedSubagents: subagentsFor(turnIndex),
         inheritableTurnIds,
         historyPrefix: historyPrefixes[turnIndex],
       });
@@ -689,7 +698,7 @@ export async function convertRollout(
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
 
-    if (isInherited(turn)) continue;
+    if (skipInherited(turn, turnIndex)) continue;
 
     if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
       debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
@@ -718,7 +727,7 @@ export async function convertRollout(
           seededParent,
           subagentIndex,
           seenThreadIds,
-          unannouncedSubagents: byTurn.get(turnIndex),
+          unannouncedSubagents: subagentsFor(turnIndex),
           inheritableTurnIds,
           historyPrefix: historyPrefixes[turnIndex],
         });
