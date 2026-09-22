@@ -411,6 +411,14 @@ function attachToolDefinitions(
   return first ? [{ ...first, tools }, ...rest] : input;
 }
 
+function generationEnd(step: ModelStep): number {
+  const firstToolCall = step.toolCalls.reduce<number | undefined>(
+    (earliest, tc) => (earliest === undefined ? tc.startTime : Math.min(earliest, tc.startTime)),
+    undefined,
+  );
+  return Math.max(step.startTime, Math.min(firstToolCall ?? step.endTime, step.endTime));
+}
+
 async function emitTurn(
   turn: Turn,
   sessionMeta: SessionMeta,
@@ -497,7 +505,7 @@ async function emitTurn(
         emitToolCall(tc, root, step.endTime);
       }
 
-      generation.end(new Date(step.endTime));
+      generation.end(new Date(generationEnd(step)));
     }
 
     const announced: SubagentRollout[] = [];
