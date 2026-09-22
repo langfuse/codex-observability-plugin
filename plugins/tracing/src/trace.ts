@@ -309,7 +309,7 @@ type ChatMlToolCall = {
 type ChatMlThinkingPart = { type: "thinking"; content: string };
 type ChatMlMessage =
   | { role: "system"; content: string }
-  | { role: "user"; content: string }
+  | { role: "user"; content: string | ContentPart[] }
   | {
       role: "assistant";
       content?: string;
@@ -350,7 +350,8 @@ function toolMessages(step: ModelStep): ChatMlMessage[] {
 
 function turnHistoryMessages(turn: Turn): ChatMlMessage[] {
   const messages: ChatMlMessage[] = [];
-  if (turn.userInput != null) messages.push({ role: "user", content: turn.userInput });
+  const user = userMessage(turn);
+  if (user) messages.push(user);
   for (const step of turn.steps) {
     messages.push(assistantMessage(step));
     messages.push(...toolMessages(step));
@@ -367,7 +368,8 @@ function generationInput(
   const messages: ChatMlMessage[] = [];
   if (systemMessage) messages.push({ role: "system", content: systemMessage });
   messages.push(...historyPrefix);
-  if (turn.userInput != null) messages.push({ role: "user", content: turn.userInput });
+  const user = userMessage(turn);
+  if (user) messages.push(user);
   for (let j = 0; j < stepIndex; j++) {
     messages.push(assistantMessage(turn.steps[j]));
     messages.push(...toolMessages(turn.steps[j]));
@@ -378,21 +380,20 @@ function generationInput(
 type ContentPart =
   { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
-function validDataUri(uri: string): boolean {
-  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]+={0,2})$/.exec(uri);
-  return match !== null && !match[1].includes(";");
-}
-
 function toMultimodalContent(
   text: string | undefined,
   images: readonly string[],
 ): string | ContentPart[] | undefined {
-  const urls = images.filter(validDataUri);
-  if (urls.length === 0) return text;
+  if (images.length === 0) return text;
   return [
     ...(text ? [{ type: "text" as const, text }] : []),
-    ...urls.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+    ...images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
   ];
+}
+
+function userMessage(turn: Turn): ChatMlMessage | undefined {
+  const content = toMultimodalContent(turn.userInput, turn.userImages);
+  return content === undefined ? undefined : { role: "user", content };
 }
 
 function attachToolDefinitions(

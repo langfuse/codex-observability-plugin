@@ -302,7 +302,7 @@ describe("convertRollout", () => {
     const root = spans.find((s) => s.name === "Codex Turn");
 
     expect(JSON.parse(attr(root!, "langfuse.observation.input"))).toEqual([
-      { type: "text", text: "Look at this\n[image image/png ~0KB]" },
+      { type: "text", text: "Look at this" },
       { type: "image_url", image_url: { url: URI } },
     ]);
     expect(attr(root!, "langfuse.observation.metadata.codex.image_count")).toBe("1");
@@ -311,8 +311,59 @@ describe("convertRollout", () => {
     const generation = spans.find((s) => obsType(s) === "generation");
     const input = JSON.parse(attr(generation!, "langfuse.observation.input"));
     expect(input[0].tools).toEqual([{ name: "exec_command", description: "Run a command." }]);
+    expect(
+      input.find((m: { role: string; content: unknown }) => m.role === "user").content,
+    ).toEqual([
+      { type: "text", text: "Look at this" },
+      { type: "image_url", image_url: { url: URI } },
+    ]);
 
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("passes every recorded image through unfiltered and keeps image_count in step", async () => {
+    const DATA_URI = "data:image/png;base64,iVBORw0KGgo=";
+    const HTTP_URL = "https://example.test/screenshot.png";
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-media-passthrough-"));
+    const day = path.join(dir, "sessions", "2026", "06", "03");
+    fs.mkdirSync(day, { recursive: true });
+    const file = path.join(day, "rollout-media-passthrough.jsonl");
+    const ts = (n: number): string => `2026-06-03T20:00:0${n}.000Z`;
+    fs.writeFileSync(
+      file,
+      [
+        { timestamp: ts(0), type: "session_meta", payload: { id: "sess-media-passthrough" } },
+        { timestamp: ts(1), type: "event_msg", payload: { type: "task_started", turn_id: "t1" } },
+        {
+          timestamp: ts(2),
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: "Compare these" },
+              { type: "input_image", image_url: DATA_URI },
+              { type: "input_image", image_url: HTTP_URL },
+            ],
+          },
+        },
+        { timestamp: ts(3), type: "event_msg", payload: { type: "token_count", info: {} } },
+        { timestamp: ts(4), type: "event_msg", payload: { type: "task_complete", turn_id: "t1" } },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n"),
+    );
+
+    await convertAndMark(file, { config: baseConfig, stoppedTurnId: "t1" });
+
+    const root = exporter.getFinishedSpans().find((s) => s.name === "Codex Turn");
+    const input = JSON.parse(attr(root!, "langfuse.observation.input"));
+    expect(input).toEqual([
+      { type: "text", text: "Compare these" },
+      { type: "image_url", image_url: { url: DATA_URI } },
+      { type: "image_url", image_url: { url: HTTP_URL } },
+    ]);
+    expect(attr(root!, "langfuse.observation.metadata.codex.image_count")).toBe("2");
   });
 
   it("nests subagent turns under the spawning turn and marks errors/interruptions", async () => {
