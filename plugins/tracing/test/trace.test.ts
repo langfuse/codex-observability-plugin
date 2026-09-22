@@ -332,6 +332,39 @@ describe("convertRollout", () => {
     expect(spans.filter((s) => s.name === "LLM Subagent")).toHaveLength(1);
   });
 
+  it("skips ancestor turns replayed into a subagent rollout", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-inherited-main.jsonl"), { config: baseConfig });
+
+    const turnIdOf = (s: ReadableSpan) => attr(s, "langfuse.observation.metadata.codex.turn_id");
+    const turns = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "Codex Turn" || s.name === "Codex Subagent Turn");
+
+    expect(turns.map(turnIdOf).sort()).toEqual([
+      "turn-inherited-leaf",
+      "turn-inherited-parent",
+      "turn-inherited-probe",
+    ]);
+    expect(turns.filter((s) => s.name === "Codex Turn").map(turnIdOf)).toEqual([
+      "turn-inherited-parent",
+    ]);
+  });
+
+  it("does not double-count usage from replayed ancestor turns", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-inherited-main.jsonl"), { config: baseConfig });
+
+    const total = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "LLM" || s.name === "LLM Subagent")
+      .reduce((sum, span) => {
+        const usage = attr(span, "langfuse.observation.usage_details");
+        return sum + (usage ? Number(JSON.parse(usage).total_tokens ?? 0) : 0);
+      }, 0);
+    expect(total).toBe(215);
+  });
+
   it("captures web search, local shell, and MCP tool calls with specific names", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-tools-main.jsonl"), { config: baseConfig });

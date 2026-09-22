@@ -1,0 +1,9 @@
+{"timestamp":"2026-06-03T15:00:00.000Z","ordinal":0,"type":"session_meta","payload":{"id":"sess-inherited","cli_version":"0.155.1","model_provider":"openai","history_mode":"paginated"}}
+{"timestamp":"2026-06-03T15:00:01.000Z","ordinal":1,"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-inherited-parent"}}
+{"timestamp":"2026-06-03T15:00:01.200Z","ordinal":2,"type":"turn_context","payload":{"model":"gpt-5.6"}}
+{"timestamp":"2026-06-03T15:00:01.300Z","ordinal":3,"type":"event_msg","payload":{"type":"user_message","message":"Spawn probe, which spawns leaf"}}
+{"timestamp":"2026-06-03T15:00:02.000Z","ordinal":4,"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"call-inh-probe","arguments":"{\"message\":\"spawn leaf\"}"}}
+{"timestamp":"2026-06-03T15:00:02.500Z","ordinal":5,"type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"call-inh-probe","agent_thread_id":"thread-inh-probe","agent_path":"/root/probe","kind":"started"}}
+{"timestamp":"2026-06-03T15:00:06.000Z","ordinal":6,"type":"event_msg","payload":{"type":"agent_message","message":"chain done"}}
+{"timestamp":"2026-06-03T15:00:06.100Z","ordinal":7,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}
+{"timestamp":"2026-06-03T15:00:06.200Z","ordinal":8,"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-inherited-parent"}}

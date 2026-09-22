@@ -295,6 +295,7 @@ async function emitTurn(
     subagentIndex: SubagentIndex;
     seenThreadIds: Set<string>;
     unannouncedSubagents?: SubagentRollout[];
+    inheritableTurnIds?: ReadonlySet<string>;
   },
 ): Promise<void> {
   const clip = makeClip(ctx.config.max_chars);
@@ -396,6 +397,7 @@ async function emitTurn(
         parentObservation: root,
         subagentIndex: ctx.subagentIndex,
         seenThreadIds: ctx.seenThreadIds,
+        ancestorTurnIds: ctx.inheritableTurnIds,
       });
       seedIds(seedBeforeChild);
     }
@@ -455,6 +457,7 @@ export async function convertRollout(
     parentObservation?: LangfuseObservation;
     subagentIndex?: SubagentIndex;
     seenThreadIds?: Set<string>;
+    ancestorTurnIds?: ReadonlySet<string>;
     stoppedTurnId?: string;
   },
 ): Promise<string[]> {
@@ -482,15 +485,26 @@ export async function convertRollout(
     byTurn.set(i, [...(byTurn.get(i) ?? []), sub]);
   }
 
+  const inheritableTurnIds = new Set(options.ancestorTurnIds);
+  for (const turn of turns) {
+    if (turn.turnId) inheritableTurnIds.add(turn.turnId);
+  }
+
   if (options.parentObservation) {
     for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
-      await emitTurn(turns[turnIndex], sessionMeta, {
+      const turn = turns[turnIndex];
+      if (turn.turnId && options.ancestorTurnIds?.has(turn.turnId)) {
+        debugLog(`skipping turn ${turn.turnId}: inherited from an ancestor thread`);
+        continue;
+      }
+      await emitTurn(turn, sessionMeta, {
         config: options.config,
         rolloutFile,
         parentObservation: options.parentObservation,
         subagentIndex,
         seenThreadIds,
         unannouncedSubagents: byTurn.get(turnIndex),
+        inheritableTurnIds,
       });
     }
     return [];
@@ -530,6 +544,7 @@ export async function convertRollout(
           subagentIndex,
           seenThreadIds,
           unannouncedSubagents: byTurn.get(turnIndex),
+          inheritableTurnIds,
         });
       },
     );
