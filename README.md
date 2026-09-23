@@ -1,42 +1,18 @@
-# Langfuse Tracing Plugin for OpenAI Codex
+# Langfuse Codex Plugin
 
-A [Codex](https://developers.openai.com/codex) plugin that traces agent turns, model calls, tool executions, token usage, and subagent threads to [Langfuse](https://langfuse.com).
+Codex plugin that sends OpenAI Codex session telemetry to Langfuse. It traces agent turns, model generations, reasoning summaries, system prompts, tool calls, images, subagent threads, skills, and token usage.
 
-Once enabled, every Codex turn shows up in Langfuse as a trace you can inspect, debug, evaluate, and monitor for cost — turning Codex from a black box into an observable agent.
+Langfuse also documents this integration on the [Codex integration page](https://langfuse.com/integrations/developer-tools/codex).
 
-## What gets traced
+## Quick Start
 
-After each Codex turn, the plugin reads the session's rollout transcript and uploads it to Langfuse as a [trace](https://langfuse.com/docs/observability/data-model). The structure mirrors how Codex actually works:
-
-- **Turn** (`Codex Turn`, an [agent observation](https://langfuse.com/docs/observability/features/observation-types)) — one trace per turn, from your prompt to the final answer.
-- **Generations** — one per model response within the turn, named `LLM` (or `LLM Subagent` inside subagent threads), carrying the model, reasoning, assistant text, tool calls, token usage, and as its input the conversation the model received on that call. A generation ends where the model's own work ends: once it has emitted a tool call, the tool's runtime is not counted as model latency.
-- **System prompt** — Codex's base prompt, its `developer`-role messages and the injected `<environment_context>`, sent on every generation as a `role: "system"` message and measured on the turn (`codex.system_prompt.total_chars`, …).
-- **Images** — every picture attached to a prompt is traced as an `image_url` part on the turn's input and on each generation's user message (stored by Langfuse as a media object, counted in `codex.image_count`), with no filter and no switch.
-- **Tool calls** — shell commands, `apply_patch`, `spawn_agent`, MCP tools and web searches, each with its input, output and error status, named `server.tool` for MCP, `skill:<name>` for a command that loads a skill, and flagged as errors when they fail. They sit beside the generation that requested them rather than inside it, because Codex runs a tool after the model call has returned; the two stay linked by `codex.call_id`.
-- **Subagents** — subagent threads are resolved from their own rollout files and nested under the spawning turn as `Codex Subagent Turn`.
-- **Sessions** — all turns from one Codex session are grouped via the Codex thread id, so you can replay the whole session in Langfuse's [Sessions](https://langfuse.com/docs/observability/features/sessions) view.
-- **Skills** — traces carry a `skill:<name>` tag for every skill a turn invokes, whether you invoked it explicitly or the agent picked it up itself.
-
-Interrupted turns (where you cancel mid-response) are still uploaded and flagged as interrupted.
-
-## Prerequisites
-
-- Node.js >= 22
-- The `npm` CLI on your `PATH`. Codex installs this plugin from the npm registry and shells out to `npm pack` to fetch it.
-- Codex >= 0.143
-- A [Langfuse Cloud](https://cloud.langfuse.com) account (or a [self-hosted](https://langfuse.com/self-hosting) instance) and API keys
-
-## Installation
-
-### 1. Add the plugin marketplace
+Add the plugin marketplace:
 
 ```bash
 codex plugin marketplace add langfuse/codex-observability-plugin
 ```
 
-### 2. Enable the plugin
-
-Enable hooks and the tracing plugin globally in `~/.codex/config.toml`, or only for a specific project in `<project>/.codex/config.toml`. Use the current `hooks` feature key.
+Then enable hooks and the plugin in `~/.codex/config.toml`, or only for one project in `<project>/.codex/config.toml`:
 
 ```toml
 [features]
@@ -46,30 +22,18 @@ hooks = true
 enabled = true
 ```
 
-### 3. Review and trust the hook
+Restart Codex after changing the config. When **Hooks need review** appears, review the Langfuse `Stop` hook in `/hooks` and trust it. An installed and enabled plugin is not yet a trusted hook, and no traces are uploaded before you trust it. Codex records trust against the current hook hash, so a plugin update can require another review.
 
-Start Codex after installing and enabling the plugin. When **Hooks need review** appears, review the Langfuse `Stop` hook and trust it before expecting traces. In the Codex CLI, you can also run `/hooks` to inspect, review, and trust the hook.
+## Supported Versions
 
-Codex records trust against the current hook hash, so plugin updates can change the hash and require another review.
+- Codex `0.143` and newer
+- Node.js `22` and newer
+- The `npm` CLI on your `PATH`, which Codex uses to fetch the plugin from the npm registry
+- Langfuse Cloud, or self-hosted Langfuse `3.95.0` and newer
 
-### 4. Set your Langfuse credentials
+## Langfuse Credentials
 
-Tracing stays off until `TRACE_TO_LANGFUSE` is `true`, so you opt in explicitly.
-
-**Option 1: Shell environment (recommended)**
-
-Add to your `~/.zshrc`, `~/.bashrc`, or `~/.bash_profile`:
-
-```bash
-export TRACE_TO_LANGFUSE="true"
-export LANGFUSE_PUBLIC_KEY="pk-lf-..."
-export LANGFUSE_SECRET_KEY="sk-lf-..."
-export LANGFUSE_BASE_URL="https://cloud.langfuse.com" # 🇪🇺 EU (default)
-```
-
-**Option 2: JSON config file**
-
-Create `~/.codex/langfuse.json` (global) or `<project>/.codex/langfuse.json` (per-project):
+Create `~/.codex/langfuse.json` (global) or `<project>/.codex/langfuse.json` (per-project) with your Langfuse credentials.
 
 ```json
 {
@@ -80,196 +44,35 @@ Create `~/.codex/langfuse.json` (global) or `<project>/.codex/langfuse.json` (pe
 }
 ```
 
-Config is resolved as **defaults → `~/.codex/langfuse.json` → `<project>/.codex/langfuse.json` → environment variables** (environment wins). `LANGFUSE_CODEX_*` variables take precedence over the matching standard `LANGFUSE_*` variables, so you can scope credentials to Codex without disturbing other Langfuse tooling.
+Only `enabled`, `public_key` and `secret_key` are required. If `base_url` is not set, the plugin uses `https://cloud.langfuse.com` for the 🇪🇺 EU region. The other regions are `https://us.cloud.langfuse.com` (🇺🇸 US), `https://jp.cloud.langfuse.com` (🇯🇵 Japan) and `https://hipaa.cloud.langfuse.com` (⚕️ HIPAA).
 
-### 5. Get your Langfuse API keys
-
-1. Go to [cloud.langfuse.com](https://cloud.langfuse.com) (or your self-hosted instance).
-2. Create a project (or open an existing one).
-3. Go to **Settings → API Keys → Create new API keys**.
-4. Copy the **public** key (`pk-lf-...`) and **secret** key (`sk-lf-...`).
-
-Run a Codex turn, then open your Langfuse project to see the trace.
-
-## Updating
-
-Codex refreshes configured marketplaces in the background when a session starts, so updates usually arrive on their own with the next restart. To pull one immediately:
+You can also set credentials with environment variables:
 
 ```bash
-codex plugin marketplace upgrade codex-observability-plugin
-codex plugin list
+export TRACE_TO_LANGFUSE="true"
+export LANGFUSE_PUBLIC_KEY="pk-lf-..."
+export LANGFUSE_SECRET_KEY="sk-lf-..."
+export LANGFUSE_BASE_URL="https://cloud.langfuse.com"
 ```
 
-`codex plugin list` shows the installed version. If a release changes the `Stop` hook command, Codex shows **Hooks need review** and the hook has to be trusted again in `/hooks` before traces resume.
+Tracing stays off until `enabled` or `TRACE_TO_LANGFUSE` is true, so you opt in explicitly. Config is resolved as defaults, then `~/.codex/langfuse.json`, then `<project>/.codex/langfuse.json`, then environment variables, and the environment wins. `LANGFUSE_CODEX_*` variables take precedence over the matching `LANGFUSE_*` ones, so you can scope credentials to Codex without disturbing other Langfuse tooling on the same machine.
 
-## Environment variables
+The remaining options are settable both ways, as a `langfuse.json` key or as the matching `LANGFUSE_CODEX_*` variable:
 
-| Variable                                                           | Required | Default                      | Description                                                                                               |
-| ------------------------------------------------------------------ | -------- | ---------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `TRACE_TO_LANGFUSE`                                                | Yes      | `false`                      | Set to `"true"` to enable tracing                                                                         |
-| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_CODEX_PUBLIC_KEY`                | Yes      | —                            | Langfuse public key (`pk-lf-...`)                                                                         |
-| `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`                | Yes      | —                            | Langfuse secret key (`sk-lf-...`)                                                                         |
-| `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`                    | No       | `https://cloud.langfuse.com` | Langfuse host / data region                                                                               |
-| `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT`      | No       | —                            | Environment label for the traces (e.g. `production`)                                                      |
-| `LANGFUSE_CODEX_USER_ID`                                           | No       | Codex auth email, if found   | Attach a user id to all traces                                                                            |
-| `LANGFUSE_CODEX_TAGS`                                              | No       | —                            | Tags for all traces (JSON array or comma-separated)                                                       |
-| `LANGFUSE_CODEX_METADATA`                                          | No       | —                            | JSON object of metadata to attach to all traces                                                           |
-| `LANGFUSE_CODEX_SKILL_TAGS`                                        | No       | `true`                       | Tag traces with `skill:<name>` for every skill invoked in the turn                                        |
-| `LANGFUSE_CODEX_TRACE_SEED`                                        | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids))                                      |
-| `LANGFUSE_CODEX_TRACEPARENT`                                       | No       | —                            | Per-run. W3C traceparent of an existing trace to attach to ([details](#attach-runs-to-an-existing-trace)) |
-| `LANGFUSE_CODEX_PARENT_TRACE_ID` / `LANGFUSE_CODEX_PARENT_SPAN_ID` | No       | —                            | Per-run. Explicit alternative to `LANGFUSE_CODEX_TRACEPARENT` (32-hex trace id plus 16-hex span id)       |
-| `LANGFUSE_CODEX_DEBUG`                                             | No       | `false`                      | Set to `"true"` for verbose logging to stderr                                                             |
-| `LANGFUSE_CODEX_FAIL_ON_ERROR`                                     | No       | `false`                      | Set to `"true"` to make hook upload errors fail the hook                                                  |
+- `environment` labels the traces with an environment, for example `production`.
+- `user_id` attaches a user to every trace. It defaults to the Codex auth email, if one is found.
+- `tags` adds your own tags to every trace, either as a JSON array or as a comma-separated list.
+- `metadata` attaches a JSON object to every trace.
+- `skill_tags` tags traces with `skill:<name>` for every skill invoked in the turn, and defaults to `true`.
+- `trace_seed` derives deterministic trace ids, so a headless caller knows a run's trace id up front. Use a unique seed per session.
+- `debug` logs verbosely to stderr, and defaults to `false`.
+- `fail_on_error` fails the hook on upload errors instead of failing open, and defaults to `false`.
 
-### Data regions
+Everything the plugin traces is uploaded to Langfuse, including prompts and tool inputs and outputs, so do not enable it for sessions containing data you do not want stored there.
 
-| Region   | `LANGFUSE_BASE_URL`                |
-| -------- | ---------------------------------- |
-| 🇪🇺 EU    | `https://cloud.langfuse.com`       |
-| 🇺🇸 US    | `https://us.cloud.langfuse.com`    |
-| 🇯🇵 Japan | `https://jp.cloud.langfuse.com`    |
-| ⚕️ HIPAA | `https://hipaa.cloud.langfuse.com` |
+## Contributing
 
-## Deterministic trace ids
-
-By default, trace ids are auto-generated, and an external system (a CI harness, benchmark runner, or dataset-experiment service) that runs `codex exec` headlessly has to poll the Langfuse API to discover the trace a run produced. Set `LANGFUSE_CODEX_TRACE_SEED` (or `trace_seed` in `langfuse.json`) to make trace ids predictable instead:
-
-- **Turn N of the main thread** (1-based, in rollout order) gets the trace id `hex(sha256("<seed>:<N>")).slice(0, 32)`.
-- **Turn N of a subagent thread** gets `hex(sha256("<seed>:<childThreadId>:<N>")).slice(0, 32)`, scoped by the subagent's thread id so it cannot collide with main-thread ids. (Subagent turns spawned _within_ a main-thread turn are nested inside that turn's trace as usual and don't get their own trace id.)
-
-The main-thread formula deliberately excludes the Codex thread id, so you can compute the trace id **before** the run starts — no thread id, no polling. The derivation matches the Langfuse SDKs' `createTraceId(seed)` helper and always yields a valid W3C trace id.
-
-**Use a unique seed per session** (e.g. a UUID or your job/run id). Reusing a seed across sessions produces colliding trace ids, and the second upload would merge into (and overwrite parts of) the first trace.
-
-If derivation ever fails, the hook falls back to auto-generated ids and still uploads — it never blocks the session (set `LANGFUSE_CODEX_FAIL_ON_ERROR=true` while testing to surface such errors).
-
-### Example: link a Codex run to a dataset run item
-
-A harness can compute the trace id up front and register it with a [dataset run](https://langfuse.com/docs/evaluation/dataset-runs/native-run) — without ever fetching traces:
-
-```bash
-SEED="$(uuidgen)" # unique per codex exec invocation
-
-# Trace id of the first main-thread turn: hex(sha256("<seed>:1")).slice(0, 32)
-TRACE_ID=$(printf '%s:1' "$SEED" | shasum -a 256 | cut -c1-32)
-
-# Link the precomputed trace id to a dataset run item before (or after) the run.
-curl -s -X POST "$LANGFUSE_BASE_URL/api/public/dataset-run-items" \
-  -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"runName\": \"codex-benchmark-2026-07-13\",
-    \"datasetItemId\": \"$DATASET_ITEM_ID\",
-    \"traceId\": \"$TRACE_ID\"
-  }"
-
-# Run Codex; the Stop hook uploads the turn with exactly $TRACE_ID.
-LANGFUSE_CODEX_TRACE_SEED="$SEED" codex exec "your prompt"
-```
-
-The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${seed}:1`)`` (from `@langfuse/tracing`) returns the identical id.
-
-## Attach runs to an existing trace
-
-When your application runs Codex as one step of an already-instrumented workflow, pass the
-context of a live span and every top-level turn — with its model calls, tool calls and
-subagents — nests under it instead of opening its own trace, while the application keeps the
-trace's name, session, user and tags.
-
-```python
-with langfuse.start_as_current_span(name="Codex run") as run_span:
-    traceparent = f"00-{run_span.trace_id}-{run_span.id}-01"
-    subprocess.run(
-        ["codex", "exec", "Refactor utils.py"],
-        env={**os.environ, "LANGFUSE_CODEX_TRACEPARENT": traceparent},
-    )
-```
-
-This variable and its `LANGFUSE_CODEX_PARENT_TRACE_ID` / `LANGFUSE_CODEX_PARENT_SPAN_ID`
-alternative are read per run from the process environment only, never from `langfuse.json`,
-and the unscoped `TRACEPARENT` is ignored because Codex injects its own. An explicit parent
-takes precedence over `trace_seed`, and the parent's sampled flag is ignored so a turn that
-already happened is never silently dropped. A malformed value is logged and falls back to
-`trace_seed` or an auto-generated trace unless `LANGFUSE_CODEX_FAIL_ON_ERROR=true`, and the
-launcher must export to the same Langfuse project as the plugin.
-
-## JSON config reference
-
-| Config key      | Environment variable                                          | Default                      | Description                       |
-| --------------- | ------------------------------------------------------------- | ---------------------------- | --------------------------------- |
-| `enabled`       | `TRACE_TO_LANGFUSE`                                           | `false`                      | Enable tracing                    |
-| `public_key`    | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_CODEX_PUBLIC_KEY`           | —                            | Langfuse public key               |
-| `secret_key`    | `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`           | —                            | Langfuse secret key               |
-| `base_url`      | `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`               | `https://cloud.langfuse.com` | Langfuse host                     |
-| `environment`   | `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT` | —                            | Environment label                 |
-| `user_id`       | `LANGFUSE_CODEX_USER_ID`                                      | Codex auth email, if found   | User id for all traces            |
-| `tags`          | `LANGFUSE_CODEX_TAGS`                                         | —                            | Tags for all traces               |
-| `metadata`      | `LANGFUSE_CODEX_METADATA`                                     | —                            | Metadata object for all traces    |
-| `skill_tags`    | `LANGFUSE_CODEX_SKILL_TAGS`                                   | `true`                       | `skill:<name>` tag per skill used |
-| `trace_seed`    | `LANGFUSE_CODEX_TRACE_SEED`                                   | —                            | Deterministic trace-id seed       |
-| `debug`         | `LANGFUSE_CODEX_DEBUG`                                        | `false`                      | Verbose logging                   |
-| `fail_on_error` | `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | `false`                      | Fail the hook on upload errors    |
-
-## Troubleshooting
-
-- **No traces appear** — confirm `[features] hooks = true`, the plugin is enabled in `config.toml`, and `TRACE_TO_LANGFUSE=true` is visible to the Codex process. Run `codex features list` to verify hooks are enabled and `codex plugin list` to verify `tracing@codex-observability-plugin` is installed and enabled. Run with `LANGFUSE_CODEX_DEBUG=true` to log to stderr.
-- **Hook is installed but does not run** — `codex plugin list` showing the plugin as installed and enabled does not mean the hook is trusted. Open `/hooks`, review the Langfuse `Stop` hook, and trust the current hook hash. A successful test should show `hook: Stop` followed by `hook: Stop Completed`.
-- **Authentication fails** — check that the public/secret keys are valid and that `LANGFUSE_BASE_URL` matches the region the keys belong to.
-- **Traces land in the wrong project** — API keys are project-scoped in Langfuse; use the keys for the project you want.
-- **Testing hook failures** — set `LANGFUSE_CODEX_FAIL_ON_ERROR=true` together with `LANGFUSE_CODEX_DEBUG=true` to make Codex report upload or flush errors instead of failing open.
-- **Checking dedup sidecars** — a turn id is appended to `<rollout>.jsonl.langfuse` only once Langfuse has received that turn. Later Stop hooks skip the ids listed there, and a turn missing from the file is retried.
-- **Verifying in Langfuse** — confirm the turn landed with bounded Observations API v2 (`GET /api/public/v2/observations`). Use credentials for the same project. Pass `--from-start-time` and `--to-start-time` to bound the window, and `--trace-id` when checking one turn:
-
-  ```bash
-  npx @langfuse/cli api observations list \
-    --from-start-time <iso> \
-    --to-start-time <iso> \
-    --trace-id <trace-id> \
-    --limit 10 --json
-  ```
-
-- **Sandboxed/network-restricted runs** — Codex sandbox or network policy can prevent exports from reaching Langfuse. Debug logging and fail-on-error mode are the quickest way to distinguish hook execution from network failure.
-- **Self-hosting** — the TypeScript SDK requires Langfuse platform version >= 3.95.0.
-
-## Data sent to Langfuse
-
-When enabled, the plugin uploads completed Codex transcript data to Langfuse: prompts, assistant messages, reasoning summaries, tool-call inputs and outputs, model metadata, and token usage. Do not enable tracing for sessions containing data you do not want stored in Langfuse.
-
-## How it works
-
-Codex emits a [`Stop` hook](https://developers.openai.com/codex) after each turn, passing the path to the session's rollout transcript on stdin. The plugin:
-
-1. Reads the rollout JSONL and reconstructs each turn (model steps, tool calls, usage, subagents).
-2. Exports every turn with a `turn_id` that is final: its `task_complete`/`turn_aborted` event is in the rollout, a later turn has started, or the `Stop` payload names it in `turn_id`. Codex appends that event only after the hook exits, so the payload is the only signal that the stopped turn is done. Fragments Codex writes between turns carry no `turn_id` and are never exported.
-3. Converts them into Langfuse observations with the original timestamps, using the [Langfuse TypeScript SDK](https://langfuse.com/docs/observability/sdk/overview) on top of OpenTelemetry.
-4. Records delivered turn ids in a sidecar file (`<rollout>.langfuse`) after the exporter flushes, so each turn is uploaded exactly once and a failed export stays retryable.
-
-The hook fails open: any tracing error is logged and swallowed so it never blocks your Codex session.
-
-## Development
-
-```bash
-pnpm install
-pnpm test        # build, then run the test suite
-pnpm run lint    # prettier + tsc
-pnpm run build   # bundle the hook to plugins/tracing/dist/index.mjs
-```
-
-The hook ships as a single self-contained `plugins/tracing/dist/index.mjs`, because Codex runs the plugin without an install step and never installs its dependencies. The bundle is a build output and is not committed: `prepack` builds it when the npm package is published, so it travels in the tarball instead of in Git. `pnpm test` builds first, since the hook-command test executes the bundled hook.
-
-### Releasing
-
-Releases go through the tag-triggered workflow, never through a manual `npm publish`. Bump the version in **both** `plugins/tracing/package.json` and `plugins/tracing/.codex-plugin/plugin.json`, then push a matching tag:
-
-```bash
-git tag v0.4.0 && git push origin v0.4.0
-```
-
-The workflow refuses a tag whose name disagrees with either version, then lints, tests, and stages the package on npm with provenance. A maintainer approves the staged publish with 2FA (`npm stage approve <id>`), and the draft GitHub release still has to be published. That is the whole release: `.agents/plugins/marketplace.json` names the package without a version, so Codex resolves the npm `latest` tag and picks the release up on its own. A prerelease published under the `next` tag stays out of the way until it is promoted.
-
-The two versions you bump matter for different things. The one in `package.json` only decides which tarball npm hands out; the one in `plugin.json` is the version Codex installs under, so it names the cache directory (`~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/`) and therefore decides whether an existing install is refreshed at all — an automatic refresh compares the `plugin.json` version against that directory name and stops when they match, while an explicit `codex plugin add` is a force reinstall and updates in place even at an unchanged version. Publishing them out of step ships a package that reports the wrong version.
-
-Never leave `version` out of `plugin.json`: Codex then installs under the literal name `local` rather than the npm version, and because that name always matches itself, no automatic refresh will ever replace the install.
+See the [contributing guide](./CONTRIBUTING.md).
 
 ## License
 
