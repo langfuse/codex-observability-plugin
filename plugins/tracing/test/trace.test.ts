@@ -742,6 +742,18 @@ describe("convertRollout", () => {
     await convertAndMark(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
+
+  it("rejects on an unreadable rollout so the hook still fails open", async () => {
+    const dir = stageFixtures();
+
+    await expect(
+      convertRollout(path.join(dir, "no-such-rollout.jsonl"), { config: baseConfig }),
+    ).rejects.toThrow(/ENOENT/);
+
+    await expect(convertRollout(dir, { config: baseConfig })).rejects.toThrow(/EISDIR/);
+
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+  });
 });
 
 describe("deterministic trace ids (trace_seed)", () => {
