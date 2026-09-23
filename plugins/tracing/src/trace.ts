@@ -1,6 +1,7 @@
-import type { Dirent } from "node:fs";
+import { createReadStream, type Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createInterface } from "node:readline";
 
 import {
   createTraceId,
@@ -30,9 +31,9 @@ import type {
 import { debugLog, toText } from "./utils.js";
 
 async function loadSession(file: string): Promise<RolloutLine[]> {
-  const data = await fs.readFile(file, "utf-8");
   const lines: RolloutLine[] = [];
-  for (const raw of data.split("\n")) {
+  const input = createReadStream(file, { encoding: "utf-8" });
+  for await (const raw of createInterface({ input, crlfDelay: Infinity })) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
     try {
@@ -411,6 +412,14 @@ function attachToolDefinitions(
   return first ? [{ ...first, tools }, ...rest] : input;
 }
 
+function generationEnd(step: ModelStep): number {
+  const firstToolCall = step.toolCalls.reduce<number | undefined>(
+    (earliest, tc) => (earliest === undefined ? tc.startTime : Math.min(earliest, tc.startTime)),
+    undefined,
+  );
+  return Math.max(step.startTime, Math.min(firstToolCall ?? step.endTime, step.endTime));
+}
+
 async function emitTurn(
   turn: Turn,
   sessionMeta: SessionMeta,
@@ -494,10 +503,10 @@ async function emitTurn(
       );
 
       for (const tc of step.toolCalls) {
-        emitToolCall(tc, generation, step.endTime);
+        emitToolCall(tc, root, step.endTime);
       }
 
-      generation.end(new Date(step.endTime));
+      generation.end(new Date(generationEnd(step)));
     }
 
     const announced: SubagentRollout[] = [];

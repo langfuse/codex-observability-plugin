@@ -49,6 +49,7 @@ const attr = (span: ReadableSpan, key: string): string =>
   span.attributes[key] == null ? "" : String(span.attributes[key]);
 const obsType = (span: ReadableSpan): string => attr(span, "langfuse.observation.type");
 const startMs = (span: ReadableSpan): number => span.startTime[0] * 1000 + span.startTime[1] / 1e6;
+const endMs = (span: ReadableSpan): number => span.endTime[0] * 1000 + span.endTime[1] / 1e6;
 const parentId = (span: ReadableSpan): string | undefined =>
   (span as unknown as { parentSpanContext?: { spanId?: string } }).parentSpanContext?.spanId ??
   (span as unknown as { parentSpanId?: string }).parentSpanId;
@@ -132,13 +133,34 @@ describe("convertRollout", () => {
         completion_tokens_details: { reasoning_tokens: 0 },
       },
     ]);
-    // One tool span, nested under a generation, with the captured command output.
+    // One tool span with the captured command output.
     const tools = spans.filter((s) => obsType(s) === "tool");
     expect(tools).toHaveLength(1);
     expect(tools[0].name).toBe("exec_command");
     expect(attr(tools[0], "langfuse.observation.metadata.codex.tool_name")).toBe("exec_command");
     expect(attr(tools[0], "langfuse.observation.output")).toContain("file1.txt");
-    expect(generations.map((g) => g.spanContext().spanId)).toContain(parentId(tools[0]));
+    expect(parentId(tools[0])).toBe(root!.spanContext().spanId);
+    expect(attr(tools[0], "langfuse.observation.metadata.codex.call_id")).toBe("call-1");
+    expect(attr(generations[0], "langfuse.observation.output")).toContain("call-1");
+  });
+
+  it("ends a generation at the tool call it emitted, not at the end of the step", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), { config: baseConfig });
+
+    const spans = exporter.getFinishedSpans();
+    const generations = spans
+      .filter((s) => obsType(s) === "generation")
+      .sort((a, b) => startMs(a) - startMs(b));
+
+    expect(startMs(generations[0])).toBe(Date.parse("2026-06-03T10:00:02.000Z"));
+    expect(endMs(generations[0])).toBe(Date.parse("2026-06-03T10:00:02.500Z"));
+
+    const tool = spans.find((s) => obsType(s) === "tool")!;
+    expect(startMs(tool)).toBe(Date.parse("2026-06-03T10:00:02.500Z"));
+    expect(endMs(tool)).toBe(Date.parse("2026-06-03T10:00:03.100Z"));
+
+    expect(endMs(generations[1])).toBe(Date.parse("2026-06-03T10:00:04.200Z"));
   });
 
   it("gives each generation the conversation up to that call", async () => {
@@ -718,6 +740,18 @@ describe("convertRollout", () => {
 
     exporter.reset();
     await convertAndMark(file, { config: baseConfig });
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+  });
+
+  it("rejects on an unreadable rollout so the hook still fails open", async () => {
+    const dir = stageFixtures();
+
+    await expect(
+      convertRollout(path.join(dir, "no-such-rollout.jsonl"), { config: baseConfig }),
+    ).rejects.toThrow(/ENOENT/);
+
+    await expect(convertRollout(dir, { config: baseConfig })).rejects.toThrow(/EISDIR/);
+
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
 });
