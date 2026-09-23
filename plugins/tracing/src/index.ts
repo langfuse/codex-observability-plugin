@@ -1,5 +1,6 @@
 import { getConfig } from "./config.js";
 import { setupInstrumentation } from "./instrumentation.js";
+import { readExternalParentSpanContext } from "./parent-context.js";
 import { markTurnUploaded } from "./sidecar.js";
 import { convertRollout } from "./trace.js";
 import type { HookInput } from "./types.js";
@@ -44,6 +45,11 @@ export async function runHook(): Promise<void> {
     return;
   }
 
+  const parentSpanContext = readExternalParentSpanContext(process.env, config.fail_on_error);
+  if (parentSpanContext && config.trace_seed) {
+    debugLog("trace_seed ignored: an external parent trace context takes precedence");
+  }
+
   const instrumentation = setupInstrumentation(config);
   let exportedTurnIds: string[] = [];
   let failure: unknown;
@@ -51,6 +57,7 @@ export async function runHook(): Promise<void> {
   try {
     exportedTurnIds = await convertRollout(hookInput.transcript_path, {
       config,
+      parentSpanContext,
       stoppedTurnId: hookInput.turn_id ?? undefined,
     });
   } catch (error) {
