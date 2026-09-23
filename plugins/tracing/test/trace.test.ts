@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 import {
   InMemorySpanExporter,
   type ReadableSpan,
@@ -53,9 +54,15 @@ const parentId = (span: ReadableSpan): string | undefined =>
   (span as unknown as { parentSpanContext?: { spanId?: string } }).parentSpanContext?.spanId ??
   (span as unknown as { parentSpanId?: string }).parentSpanId;
 
+const turnRoots = () =>
+  exporter
+    .getFinishedSpans()
+    .filter((s) => s.name === "Codex Turn" || s.name === "Codex Subagent Turn")
+    .sort((a, b) => startMs(a) - startMs(b));
+
 async function convertAndMark(
   file: string,
-  options: { config: Config; stoppedTurnId?: string },
+  options: { config: Config; stoppedTurnId?: string; parentSpanContext?: SpanContext },
 ): Promise<string[]> {
   const exported = await convertRollout(file, options);
   for (const turnId of exported) await markTurnUploaded(file, turnId);
@@ -726,12 +733,6 @@ describe("deterministic trace ids (trace_seed)", () => {
   const seed = "ci-run-42";
   const seededConfig: Config = { ...baseConfig, trace_seed: seed };
 
-  const turnRoots = () =>
-    exporter
-      .getFinishedSpans()
-      .filter((s) => s.name === "Codex Turn" || s.name === "Codex Subagent Turn")
-      .sort((a, b) => startMs(a) - startMs(b));
-
   it("derives the N-th main-thread turn's trace id from `${seed}:${N}`", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-two-turns-main.jsonl"), {
@@ -1028,5 +1029,92 @@ describe("turn finality", () => {
       "turn-2",
       "turn-3",
     ]);
+  });
+});
+
+describe("attached mode (external parent span)", () => {
+  const EXTERNAL_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
+  const EXTERNAL_SPAN_ID = "b7ad6b7169203331";
+  const parentSpanContext: SpanContext = {
+    traceId: EXTERNAL_TRACE_ID,
+    spanId: EXTERNAL_SPAN_ID,
+    traceFlags: TraceFlags.SAMPLED,
+    isRemote: true,
+  };
+
+  it("nests every top-level turn under the supplied application span", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-two-turns-main.jsonl"), {
+      config: baseConfig,
+      parentSpanContext,
+    });
+
+    const roots = turnRoots();
+    expect(roots).toHaveLength(2);
+    for (const root of roots) {
+      expect(root.spanContext().traceId).toBe(EXTERNAL_TRACE_ID);
+      expect(parentId(root)).toBe(EXTERNAL_SPAN_ID);
+    }
+
+    for (const span of exporter.getFinishedSpans()) {
+      expect(span.spanContext().traceId).toBe(EXTERNAL_TRACE_ID);
+    }
+  });
+
+  it("records the parent ids on the turn for debuggability", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), {
+      config: baseConfig,
+      parentSpanContext,
+    });
+
+    const root = turnRoots()[0];
+    expect(attr(root, "langfuse.observation.metadata.codex.parent_trace_id")).toBe(
+      EXTERNAL_TRACE_ID,
+    );
+    expect(attr(root, "langfuse.observation.metadata.codex.parent_span_id")).toBe(EXTERNAL_SPAN_ID);
+    expect(attr(root, "langfuse.observation.metadata.codex.thread_id")).toBeTruthy();
+  });
+
+  it("takes precedence over trace_seed", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-two-turns-main.jsonl"), {
+      config: { ...baseConfig, trace_seed: "ci-run-42" },
+      parentSpanContext,
+    });
+
+    for (const root of turnRoots()) {
+      expect(root.spanContext().traceId).toBe(EXTERNAL_TRACE_ID);
+      expect(root.spanContext().traceId).not.toBe(seededTraceId("ci-run-42:1"));
+    }
+  });
+
+  it("keeps subagent turns nested under their own turn, not the application span", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-parent.jsonl"), {
+      config: baseConfig,
+      parentSpanContext,
+    });
+
+    const roots = turnRoots();
+    expect(roots).toHaveLength(2); // parent turn + nested subagent turn
+    const parentTurn = roots.find((s) => s.name === "Codex Turn")!;
+    const subagentTurn = roots.find((s) => s.name === "Codex Subagent Turn")!;
+
+    expect(parentId(parentTurn)).toBe(EXTERNAL_SPAN_ID);
+    expect(parentId(subagentTurn)).toBe(parentTurn.spanContext().spanId);
+    expect(subagentTurn.attributes["langfuse.internal.is_app_root"]).toBeUndefined();
+  });
+
+  it("marks turns uploaded exactly as standalone mode does", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-two-turns-main.jsonl");
+    const exported = await convertAndMark(file, { config: baseConfig, parentSpanContext });
+
+    expect(exported).toHaveLength(2);
+
+    exporter.reset();
+    expect(await convertAndMark(file, { config: baseConfig, parentSpanContext })).toEqual([]);
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
 });

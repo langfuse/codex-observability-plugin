@@ -4,6 +4,7 @@ import * as path from "node:path";
 
 import {
   createTraceId,
+  LangfuseOtelSpanAttributes,
   propagateAttributes,
   startObservation,
   type LangfuseGenerationAttributes,
@@ -418,7 +419,8 @@ async function emitTurn(
     config: Config;
     rolloutFile: string;
     parentObservation?: LangfuseObservation;
-    seededParent?: SpanContext;
+    parentSpanContext?: SpanContext;
+    attached?: boolean;
     subagentIndex: SubagentIndex;
     seenThreadIds: Set<string>;
     unannouncedSubagents?: SubagentRollout[];
@@ -447,6 +449,12 @@ async function emitTurn(
         "codex.cli_version": sessionMeta.cliVersion,
         "codex.aborted": turn.aborted,
         "codex.tool_call_count": turn.steps.reduce((n, s) => n + s.toolCalls.length, 0),
+        ...(ctx.attached && ctx.parentSpanContext
+          ? {
+              "codex.parent_trace_id": ctx.parentSpanContext.traceId,
+              "codex.parent_span_id": ctx.parentSpanContext.spanId,
+            }
+          : {}),
         ...(turn.systemPrompt ? systemPromptMetadata(turn.systemPrompt) : {}),
         ...(turn.userImages.length ? { "codex.image_count": turn.userImages.length } : {}),
         ...(turn.toolDefinitions.length
@@ -457,9 +465,13 @@ async function emitTurn(
     {
       asType: "agent",
       startTime: new Date(turn.startTime),
-      parentSpanContext: ctx.parentObservation?.otelSpan.spanContext() ?? ctx.seededParent,
+      parentSpanContext: ctx.parentObservation?.otelSpan.spanContext() ?? ctx.parentSpanContext,
     },
   );
+
+  if (ctx.attached) {
+    root.otelSpan.setAttribute(LangfuseOtelSpanAttributes.IS_APP_ROOT, false);
+  }
 
   let failure: unknown;
   try {
@@ -606,6 +618,7 @@ export async function convertRollout(
   options: {
     config: Config;
     parentObservation?: LangfuseObservation;
+    parentSpanContext?: SpanContext;
     subagentIndex?: SubagentIndex;
     seenThreadIds?: Set<string>;
     ancestorTurnIds?: ReadonlySet<string>;
@@ -695,6 +708,7 @@ export async function convertRollout(
 
   const uploaded = await loadUploadedTurnIds(rolloutFile);
   const exportedTurnIds: string[] = [];
+  const attached = options.parentSpanContext != null;
 
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
@@ -709,31 +723,38 @@ export async function convertRollout(
       continue;
     }
 
-    const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
+    const parentSpanContext =
+      options.parentSpanContext ??
+      (await seededTraceParent(options.config, sessionMeta, turnIndex + 1));
 
-    const tags = traceTags(options.config, turn);
+    const emit = () =>
+      emitTurn(turn, sessionMeta, {
+        config: options.config,
+        rolloutFile,
+        parentSpanContext,
+        attached,
+        subagentIndex,
+        seenThreadIds,
+        unannouncedSubagents: subagentsFor(turnIndex),
+        inheritableTurnIds,
+        historyPrefix: historyPrefixes[turnIndex],
+      });
 
-    await propagateAttributes(
-      {
-        sessionId: sessionMeta.sessionId,
-        traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
-        ...(options.config.user_id ? { userId: options.config.user_id } : {}),
-        ...(tags.length > 0 ? { tags } : {}),
-        ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
-      },
-      async () => {
-        await emitTurn(turn, sessionMeta, {
-          config: options.config,
-          rolloutFile,
-          seededParent,
-          subagentIndex,
-          seenThreadIds,
-          unannouncedSubagents: subagentsFor(turnIndex),
-          inheritableTurnIds,
-          historyPrefix: historyPrefixes[turnIndex],
-        });
-      },
-    );
+    if (attached) {
+      await emit();
+    } else {
+      const tags = traceTags(options.config, turn);
+      await propagateAttributes(
+        {
+          sessionId: sessionMeta.sessionId,
+          traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
+          ...(options.config.user_id ? { userId: options.config.user_id } : {}),
+          ...(tags.length > 0 ? { tags } : {}),
+          ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
+        },
+        emit,
+      );
+    }
 
     uploaded.add(turn.turnId);
     exportedTurnIds.push(turn.turnId);
