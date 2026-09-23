@@ -12,6 +12,6 @@
     "verbatimModuleSyntax": true,
     "noEmit": true
   },
-  "include": ["plugins/tracing/src", "plugins/tracing/test"],
+  "include": ["plugins/tracing/src", "plugins/tracing/test", "plugins/tracing/tsdown.config.ts"],
   "exclude": ["node_modules", "**/dist"]
 }

@@ -1,9 +1,11 @@
-import type { Dirent } from "node:fs";
+import { createReadStream, type Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createInterface } from "node:readline";
 
 import {
   createTraceId,
+  LangfuseOtelSpanAttributes,
   propagateAttributes,
   startObservation,
   type LangfuseGenerationAttributes,
@@ -30,9 +32,9 @@ import type {
 import { debugLog, toText } from "./utils.js";
 
 async function loadSession(file: string): Promise<RolloutLine[]> {
-  const data = await fs.readFile(file, "utf-8");
   const lines: RolloutLine[] = [];
-  for (const raw of data.split("\n")) {
+  const input = createReadStream(file, { encoding: "utf-8" });
+  for await (const raw of createInterface({ input, crlfDelay: Infinity })) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
     try {
@@ -411,6 +413,14 @@ function attachToolDefinitions(
   return first ? [{ ...first, tools }, ...rest] : input;
 }
 
+function generationEnd(step: ModelStep): number {
+  const firstToolCall = step.toolCalls.reduce<number | undefined>(
+    (earliest, tc) => (earliest === undefined ? tc.startTime : Math.min(earliest, tc.startTime)),
+    undefined,
+  );
+  return Math.max(step.startTime, Math.min(firstToolCall ?? step.endTime, step.endTime));
+}
+
 async function emitTurn(
   turn: Turn,
   sessionMeta: SessionMeta,
@@ -418,7 +428,8 @@ async function emitTurn(
     config: Config;
     rolloutFile: string;
     parentObservation?: LangfuseObservation;
-    seededParent?: SpanContext;
+    parentSpanContext?: SpanContext;
+    attached?: boolean;
     subagentIndex: SubagentIndex;
     seenThreadIds: Set<string>;
     unannouncedSubagents?: SubagentRollout[];
@@ -447,6 +458,12 @@ async function emitTurn(
         "codex.cli_version": sessionMeta.cliVersion,
         "codex.aborted": turn.aborted,
         "codex.tool_call_count": turn.steps.reduce((n, s) => n + s.toolCalls.length, 0),
+        ...(ctx.attached && ctx.parentSpanContext
+          ? {
+              "codex.parent_trace_id": ctx.parentSpanContext.traceId,
+              "codex.parent_span_id": ctx.parentSpanContext.spanId,
+            }
+          : {}),
         ...(turn.systemPrompt ? systemPromptMetadata(turn.systemPrompt) : {}),
         ...(turn.userImages.length ? { "codex.image_count": turn.userImages.length } : {}),
         ...(turn.toolDefinitions.length
@@ -457,9 +474,13 @@ async function emitTurn(
     {
       asType: "agent",
       startTime: new Date(turn.startTime),
-      parentSpanContext: ctx.parentObservation?.otelSpan.spanContext() ?? ctx.seededParent,
+      parentSpanContext: ctx.parentObservation?.otelSpan.spanContext() ?? ctx.parentSpanContext,
     },
   );
+
+  if (ctx.attached) {
+    root.otelSpan.setAttribute(LangfuseOtelSpanAttributes.IS_APP_ROOT, false);
+  }
 
   let failure: unknown;
   try {
@@ -494,10 +515,10 @@ async function emitTurn(
       );
 
       for (const tc of step.toolCalls) {
-        emitToolCall(tc, generation, step.endTime);
+        emitToolCall(tc, root, step.endTime);
       }
 
-      generation.end(new Date(step.endTime));
+      generation.end(new Date(generationEnd(step)));
     }
 
     const announced: SubagentRollout[] = [];
@@ -606,6 +627,7 @@ export async function convertRollout(
   options: {
     config: Config;
     parentObservation?: LangfuseObservation;
+    parentSpanContext?: SpanContext;
     subagentIndex?: SubagentIndex;
     seenThreadIds?: Set<string>;
     ancestorTurnIds?: ReadonlySet<string>;
@@ -695,6 +717,7 @@ export async function convertRollout(
 
   const uploaded = await loadUploadedTurnIds(rolloutFile);
   const exportedTurnIds: string[] = [];
+  const attached = options.parentSpanContext != null;
 
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
     const turn = turns[turnIndex];
@@ -709,31 +732,38 @@ export async function convertRollout(
       continue;
     }
 
-    const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
+    const parentSpanContext =
+      options.parentSpanContext ??
+      (await seededTraceParent(options.config, sessionMeta, turnIndex + 1));
 
-    const tags = traceTags(options.config, turn);
+    const emit = () =>
+      emitTurn(turn, sessionMeta, {
+        config: options.config,
+        rolloutFile,
+        parentSpanContext,
+        attached,
+        subagentIndex,
+        seenThreadIds,
+        unannouncedSubagents: subagentsFor(turnIndex),
+        inheritableTurnIds,
+        historyPrefix: historyPrefixes[turnIndex],
+      });
 
-    await propagateAttributes(
-      {
-        sessionId: sessionMeta.sessionId,
-        traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
-        ...(options.config.user_id ? { userId: options.config.user_id } : {}),
-        ...(tags.length > 0 ? { tags } : {}),
-        ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
-      },
-      async () => {
-        await emitTurn(turn, sessionMeta, {
-          config: options.config,
-          rolloutFile,
-          seededParent,
-          subagentIndex,
-          seenThreadIds,
-          unannouncedSubagents: subagentsFor(turnIndex),
-          inheritableTurnIds,
-          historyPrefix: historyPrefixes[turnIndex],
-        });
-      },
-    );
+    if (attached) {
+      await emit();
+    } else {
+      const tags = traceTags(options.config, turn);
+      await propagateAttributes(
+        {
+          sessionId: sessionMeta.sessionId,
+          traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
+          ...(options.config.user_id ? { userId: options.config.user_id } : {}),
+          ...(tags.length > 0 ? { tags } : {}),
+          ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
+        },
+        emit,
+      );
+    }
 
     uploaded.add(turn.turnId);
     exportedTurnIds.push(turn.turnId);

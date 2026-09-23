@@ -28,7 +28,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint:tsc": "tsc --noEmit",
-    "lint": "pnpm run format:check && pnpm run lint:tsc && pnpm run build"
+    "lint": "pnpm run format:check && pnpm run lint:tsc"
   },
   "dependencies": {
     "@langfuse/otel": "^5.11.1",
