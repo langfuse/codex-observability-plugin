@@ -104,20 +104,22 @@ codex plugin list
 
 ## Environment variables
 
-| Variable                                                      | Required | Default                      | Description                                                          |
-| ------------------------------------------------------------- | -------- | ---------------------------- | -------------------------------------------------------------------- |
-| `TRACE_TO_LANGFUSE`                                           | Yes      | `false`                      | Set to `"true"` to enable tracing                                    |
-| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_CODEX_PUBLIC_KEY`           | Yes      | —                            | Langfuse public key (`pk-lf-...`)                                    |
-| `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`           | Yes      | —                            | Langfuse secret key (`sk-lf-...`)                                    |
-| `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`               | No       | `https://cloud.langfuse.com` | Langfuse host / data region                                          |
-| `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT` | No       | —                            | Environment label for the traces (e.g. `production`)                 |
-| `LANGFUSE_CODEX_USER_ID`                                      | No       | Codex auth email, if found   | Attach a user id to all traces                                       |
-| `LANGFUSE_CODEX_TAGS`                                         | No       | —                            | Tags for all traces (JSON array or comma-separated)                  |
-| `LANGFUSE_CODEX_METADATA`                                     | No       | —                            | JSON object of metadata to attach to all traces                      |
-| `LANGFUSE_CODEX_SKILL_TAGS`                                   | No       | `true`                       | Tag traces with `skill:<name>` for every skill invoked in the turn   |
-| `LANGFUSE_CODEX_TRACE_SEED`                                   | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids)) |
-| `LANGFUSE_CODEX_DEBUG`                                        | No       | `false`                      | Set to `"true"` for verbose logging to stderr                        |
-| `LANGFUSE_CODEX_FAIL_ON_ERROR`                                | No       | `false`                      | Set to `"true"` to make hook upload errors fail the hook             |
+| Variable                                                           | Required | Default                      | Description                                                                                               |
+| ------------------------------------------------------------------ | -------- | ---------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `TRACE_TO_LANGFUSE`                                                | Yes      | `false`                      | Set to `"true"` to enable tracing                                                                         |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_CODEX_PUBLIC_KEY`                | Yes      | —                            | Langfuse public key (`pk-lf-...`)                                                                         |
+| `LANGFUSE_SECRET_KEY` / `LANGFUSE_CODEX_SECRET_KEY`                | Yes      | —                            | Langfuse secret key (`sk-lf-...`)                                                                         |
+| `LANGFUSE_BASE_URL` / `LANGFUSE_CODEX_BASE_URL`                    | No       | `https://cloud.langfuse.com` | Langfuse host / data region                                                                               |
+| `LANGFUSE_TRACING_ENVIRONMENT` / `LANGFUSE_CODEX_ENVIRONMENT`      | No       | —                            | Environment label for the traces (e.g. `production`)                                                      |
+| `LANGFUSE_CODEX_USER_ID`                                           | No       | Codex auth email, if found   | Attach a user id to all traces                                                                            |
+| `LANGFUSE_CODEX_TAGS`                                              | No       | —                            | Tags for all traces (JSON array or comma-separated)                                                       |
+| `LANGFUSE_CODEX_METADATA`                                          | No       | —                            | JSON object of metadata to attach to all traces                                                           |
+| `LANGFUSE_CODEX_SKILL_TAGS`                                        | No       | `true`                       | Tag traces with `skill:<name>` for every skill invoked in the turn                                        |
+| `LANGFUSE_CODEX_TRACE_SEED`                                        | No       | —                            | Derive deterministic trace ids ([details](#deterministic-trace-ids))                                      |
+| `LANGFUSE_CODEX_TRACEPARENT`                                       | No       | —                            | Per-run. W3C traceparent of an existing trace to attach to ([details](#attach-runs-to-an-existing-trace)) |
+| `LANGFUSE_CODEX_PARENT_TRACE_ID` / `LANGFUSE_CODEX_PARENT_SPAN_ID` | No       | —                            | Per-run. Explicit alternative to `LANGFUSE_CODEX_TRACEPARENT` (32-hex trace id plus 16-hex span id)       |
+| `LANGFUSE_CODEX_DEBUG`                                             | No       | `false`                      | Set to `"true"` for verbose logging to stderr                                                             |
+| `LANGFUSE_CODEX_FAIL_ON_ERROR`                                     | No       | `false`                      | Set to `"true"` to make hook upload errors fail the hook                                                  |
 
 ### Data regions
 
@@ -166,6 +168,30 @@ LANGFUSE_CODEX_TRACE_SEED="$SEED" codex exec "your prompt"
 ```
 
 The same works from JavaScript with the Langfuse SDK: ``await createTraceId(`${seed}:1`)`` (from `@langfuse/tracing`) returns the identical id.
+
+## Attach runs to an existing trace
+
+When your application runs Codex as one step of an already-instrumented workflow, pass the
+context of a live span and every top-level turn — with its model calls, tool calls and
+subagents — nests under it instead of opening its own trace, while the application keeps the
+trace's name, session, user and tags.
+
+```python
+with langfuse.start_as_current_span(name="Codex run") as run_span:
+    traceparent = f"00-{run_span.trace_id}-{run_span.id}-01"
+    subprocess.run(
+        ["codex", "exec", "Refactor utils.py"],
+        env={**os.environ, "LANGFUSE_CODEX_TRACEPARENT": traceparent},
+    )
+```
+
+This variable and its `LANGFUSE_CODEX_PARENT_TRACE_ID` / `LANGFUSE_CODEX_PARENT_SPAN_ID`
+alternative are read per run from the process environment only, never from `langfuse.json`,
+and the unscoped `TRACEPARENT` is ignored because Codex injects its own. An explicit parent
+takes precedence over `trace_seed`, and the parent's sampled flag is ignored so a turn that
+already happened is never silently dropped. A malformed value is logged and falls back to
+`trace_seed` or an auto-generated trace unless `LANGFUSE_CODEX_FAIL_ON_ERROR=true`, and the
+launcher must export to the same Langfuse project as the plugin.
 
 ## JSON config reference
 
