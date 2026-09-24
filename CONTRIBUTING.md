@@ -70,7 +70,6 @@ tsdown bundles the hook and its runtime dependencies into `plugins/tracing/dist/
 
 4. Review and publish the draft GitHub release created by the workflow.
 
-
 Do not approve the npm package or publish the GitHub draft until both staged artifacts have been reviewed. If the workflow fails before staging, fix the problem and move the tag to the corrected release commit. If staging succeeded, do not rerun the workflow with the same version, because staged and published versions cannot be staged again.
 
 The two versions you bump matter for different things. The one in `package.json` only decides which tarball npm hands out. The one in `plugin.json` is the version Codex installs under, so it names the cache directory `~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/` and therefore decides whether an existing install is refreshed at all. Never leave `version` out of `plugin.json`, because Codex then installs under the literal name `local`, and since that name always matches itself, no automatic refresh will ever replace the install.
