@@ -70,7 +70,6 @@ tsdown bundles the hook and its runtime dependencies into `plugins/tracing/dist/
 
 4. Review and publish the draft GitHub release created by the workflow.
 
-5. Point `.agents/plugins/marketplace.json` at the new version, because that pin is what users install.
 
 Do not approve the npm package or publish the GitHub draft until both staged artifacts have been reviewed. If the workflow fails before staging, fix the problem and move the tag to the corrected release commit. If staging succeeded, do not rerun the workflow with the same version, because staged and published versions cannot be staged again.
 
