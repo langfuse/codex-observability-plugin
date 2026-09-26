@@ -709,6 +709,134 @@ describe("convertRollout", () => {
     expect(attr(shell, "langfuse.observation.output")).toContain("clean");
   });
 
+  it("emits nested Codex MCP items as named tool observations", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-code-mode-mcp.jsonl");
+    const input = { organization_id: "demo" };
+    const lines = [
+      { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "sess-mcp" } },
+      {
+        timestamp: "2026-06-03T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-mcp" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:01.200Z",
+        type: "turn_context",
+        payload: { model: "gpt-5.6" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:01.300Z",
+        type: "event_msg",
+        payload: { type: "user_message", message: "List projects" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "exec-1",
+          input: "await codex_app.list_projects({ organization_id: 'demo' });",
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.100Z",
+        type: "event_msg",
+        payload: {
+          type: "item_started",
+          item: {
+            type: "McpToolCall",
+            id: "mcp-1",
+            server: "codex_app",
+            tool: "list_projects",
+            status: "inProgress",
+            arguments: input,
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.900Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "McpToolCall",
+            id: "mcp-1",
+            server: "codex_app",
+            tool: "list_projects",
+            status: "completed",
+            arguments: input,
+            result: { projects: [{ id: "project-1", name: "Demo" }] },
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.000Z",
+        type: "event_msg",
+        payload: {
+          type: "item_started",
+          item: {
+            type: "McpToolCall",
+            id: "mcp-2",
+            server: "codex_app",
+            tool: "get_project",
+            status: "inProgress",
+            arguments: { project_id: "project-1" },
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.400Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "McpToolCall",
+            id: "mcp-2",
+            server: "codex_app",
+            tool: "get_project",
+            status: "failed",
+            arguments: { project_id: "project-1" },
+            error: { message: "access denied" },
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.500Z",
+        type: "response_item",
+        payload: { type: "custom_tool_call_output", call_id: "exec-1", output: "done" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.600Z",
+        type: "event_msg",
+        payload: { type: "agent_message", message: "The project is Demo." },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.700Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "turn-mcp" },
+      },
+    ];
+    fs.writeFileSync(file, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+
+    await convertRollout(file, { config: baseConfig });
+
+    const tools = exporter.getFinishedSpans().filter((span) => obsType(span) === "tool");
+    const listProjects = tools.find((span) => span.name === "codex_app.list_projects");
+    expect(listProjects).toBeDefined();
+    expect(attr(listProjects!, "langfuse.observation.metadata.codex.call_id")).toBe("mcp-1");
+    expect(attr(listProjects!, "langfuse.observation.input")).toContain('"organization_id":"demo"');
+    expect(attr(listProjects!, "langfuse.observation.output")).toContain("Demo");
+    expect(startMs(listProjects!)).toBe(Date.parse("2026-06-03T12:00:02.100Z"));
+    expect(endMs(listProjects!)).toBe(Date.parse("2026-06-03T12:00:02.900Z"));
+
+    const failedProject = tools.find((span) => span.name === "codex_app.get_project");
+    expect(failedProject).toBeDefined();
+    expect(attr(failedProject!, "langfuse.observation.level")).toBe("ERROR");
+    expect(attr(failedProject!, "langfuse.observation.status_message")).toContain("access denied");
+  });
+
   it("does not re-export a settings event between turns on every invocation", async () => {
     const dir = stageFixtures();
     const file = path.join(dir, "rollout-thread-settings-main.jsonl");

@@ -613,6 +613,170 @@ describe("parseSession", () => {
     expect(tool.args).toBe("*** Begin Patch");
     expect(tool.output).toBe("patched");
   });
+
+  it("captures MCP tool-call items and merges direct model calls by id", () => {
+    const input = { organization_id: "demo" };
+    const result = { projects: [{ id: "project-1", name: "Demo" }] };
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-06-03T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "mcp__codex_app__list_projects",
+          call_id: "direct-1",
+          arguments: JSON.stringify(input),
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.100Z",
+        type: "event_msg",
+        payload: {
+          type: "item_started",
+          item: {
+            type: "McpToolCall",
+            id: "direct-1",
+            server: "codex_app",
+            tool: "list_projects",
+            status: "inProgress",
+            arguments: input,
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.600Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "McpToolCall",
+            id: "direct-1",
+            server: "codex_app",
+            tool: "list_projects",
+            status: "completed",
+            arguments: input,
+            result,
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.000Z",
+        type: "event_msg",
+        payload: {
+          type: "item_started",
+          item: {
+            type: "McpToolCall",
+            id: "nested-1",
+            server: "codex_app",
+            tool: "list_projects",
+            status: "inProgress",
+            arguments: input,
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.800Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "McpToolCall",
+            id: "nested-1",
+            server: "codex_app",
+            tool: "list_projects",
+            status: "failed",
+            arguments: input,
+            error: { message: "access denied" },
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.900Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "McpToolCall",
+            id: "completed-only-1",
+            server: "codex_app",
+            tool: "list_projects",
+            status: "completed",
+            duration: { secs: 0, nanos: 100_000_000 },
+            arguments: input,
+            result,
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.950Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "McpToolCall",
+            id: "completed-only-ms",
+            server: "codex_app",
+            tool: "list_projects",
+            status: "completed",
+            durationMs: 100,
+            arguments: input,
+            result,
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:04.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t" },
+      },
+    ];
+
+    const { turns } = parseSession(lines);
+    const tools = turns[0].steps.flatMap((step) => step.toolCalls);
+    expect(tools).toHaveLength(4);
+
+    const direct = tools.find((tool) => tool.callId === "direct-1");
+    expect(direct).toMatchObject({
+      name: "mcp__codex_app__list_projects",
+      args: input,
+      output: result,
+      mcp: { server: "codex_app", tool: "list_projects" },
+      startTime: Date.parse("2026-06-03T12:00:02.100Z"),
+      endTime: Date.parse("2026-06-03T12:00:02.600Z"),
+    });
+
+    const nested = tools.find((tool) => tool.callId === "nested-1");
+    expect(nested).toMatchObject({
+      name: "list_projects",
+      args: input,
+      error: '{"message":"access denied"}',
+      mcp: { server: "codex_app", tool: "list_projects" },
+      startTime: Date.parse("2026-06-03T12:00:03.000Z"),
+      endTime: Date.parse("2026-06-03T12:00:03.800Z"),
+    });
+
+    const completedOnly = tools.find((tool) => tool.callId === "completed-only-1");
+    expect(completedOnly).toMatchObject({
+      name: "list_projects",
+      args: input,
+      output: result,
+      mcp: { server: "codex_app", tool: "list_projects" },
+      startTime: Date.parse("2026-06-03T12:00:03.800Z"),
+      endTime: Date.parse("2026-06-03T12:00:03.900Z"),
+    });
+
+    const completedWithDurationMs = tools.find((tool) => tool.callId === "completed-only-ms");
+    expect(completedWithDurationMs).toMatchObject({
+      startTime: Date.parse("2026-06-03T12:00:03.850Z"),
+      endTime: Date.parse("2026-06-03T12:00:03.950Z"),
+    });
+  });
 });
 
 describe("user prompt extraction", () => {
