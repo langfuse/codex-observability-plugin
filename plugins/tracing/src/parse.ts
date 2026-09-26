@@ -76,6 +76,16 @@ export function parseArgs(raw: string): unknown {
   }
 }
 
+function mcpToolCallError(result: unknown): string {
+  if (typeof result === "string" && result) return result;
+  if (result !== null && typeof result === "object") {
+    const r = result as Record<string, unknown>;
+    if (typeof r.Err === "string" && r.Err) return r.Err;
+    if (typeof r.error === "string" && r.error) return r.error;
+  }
+  return "MCP tool call failed";
+}
+
 function extractToolError(payload: EventMsgPayload): string | undefined {
   const explicit = payload.error ?? payload.codex_error_info;
   if (explicit != null) {
@@ -375,6 +385,48 @@ export function parseSession(lines: RolloutLine[]): {
       } else if (et === "item_completed" && p.item?.type === "UserMessage") {
         const text = extractMessageText(p.item.content);
         if (text && !turn!.userInput) turn!.userInput = text;
+      } else if (et === "item_completed" && p.item?.type === "McpToolCall") {
+        // Why: Desktop code-mode surfaces nested MCP calls only as completed McpToolCall items -
+        // no mcp_tool_call_begin/end events and no model-visible call to enrich.
+        const item = p.item as {
+          id?: unknown;
+          server?: unknown;
+          tool?: unknown;
+          arguments?: unknown;
+          result?: unknown;
+          status?: unknown;
+        };
+        if (
+          typeof item.id === "string" &&
+          typeof item.server === "string" &&
+          typeof item.tool === "string"
+        ) {
+          const failed = item.status === "failed";
+          const existing = toolCallsById.get(item.id);
+          if (existing) {
+            existing.mcp = existing.mcp ?? { server: item.server, tool: item.tool };
+            if (!failed && existing.output == null && item.result !== undefined) {
+              existing.output = item.result;
+            }
+            existing.endTime = Math.max(existing.endTime ?? ts, ts);
+            if (failed && !existing.error) existing.error = mcpToolCallError(item.result);
+          } else {
+            // startTime is the completion time: the item's duration has no documented
+            // serialized shape, so don't guess units from it.
+            const s = ensureStep(ts);
+            const tc: ToolCall = {
+              callId: item.id,
+              name: `${item.server}.${item.tool}`,
+              args: item.arguments,
+              startTime: ts,
+              endTime: ts,
+              ...(failed ? { error: mcpToolCallError(item.result) } : { output: item.result }),
+              mcp: { server: item.server, tool: item.tool },
+            };
+            s.toolCalls.push(tc);
+            toolCallsById.set(tc.callId, tc);
+          }
+        }
       } else if (et === "agent_message" && typeof p.message === "string") {
         turn!.lastAgentMessage = p.message;
       } else if (et === "token_count") {

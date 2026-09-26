@@ -536,6 +536,93 @@ describe("parseSession", () => {
     expect(mcp?.mcp).toEqual({ server: "linear", tool: "create_issue" });
   });
 
+  it("captures completed McpToolCall items from Desktop code-mode turns", () => {
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-06-03T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.000Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "McpToolCall",
+            id: "mcp_1",
+            server: "codex_app",
+            tool: "list_projects",
+            arguments: { limit: 5 },
+            result: { content: [{ type: "text", text: "[]" }] },
+            status: "completed",
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t" },
+      },
+    ];
+    const { turns } = parseSession(lines);
+    const tools = turns[0].steps.flatMap((s) => s.toolCalls);
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe("codex_app.list_projects");
+    expect(tools[0].mcp).toEqual({ server: "codex_app", tool: "list_projects" });
+    expect(tools[0].args).toEqual({ limit: 5 });
+    expect(tools[0].output).toEqual({ content: [{ type: "text", text: "[]" }] });
+  });
+
+  it("enriches a model-visible call from a completed McpToolCall item without duplicating it", () => {
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-06-03T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t" },
+      },
+      {
+        timestamp: "2026-06-03T12:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          call_id: "mcp_2",
+          name: "linear__create_issue",
+          arguments: '{"title":"bug"}',
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:03.000Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "McpToolCall",
+            id: "mcp_2",
+            server: "linear",
+            tool: "create_issue",
+            arguments: { title: "bug" },
+            result: { Err: "boom" },
+            status: "failed",
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T12:00:04.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t" },
+      },
+    ];
+    const { turns } = parseSession(lines);
+    const tools = turns[0].steps.flatMap((s) => s.toolCalls);
+    expect(tools).toHaveLength(1);
+    expect(tools[0].mcp).toEqual({ server: "linear", tool: "create_issue" });
+    expect(tools[0].error).toBe("boom");
+    expect(tools[0].output).toBeUndefined();
+  });
+
   it("merges a web_search_call item with a later web_search_end event", () => {
     const lines: RolloutLine[] = [
       { timestamp: "2026-06-03T12:00:00.000Z", type: "session_meta", payload: { id: "s" } },
