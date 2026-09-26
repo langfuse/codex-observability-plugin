@@ -1,5 +1,6 @@
 import { skillsForPrompt } from "./skills.js";
 import type {
+  EventMsgItem,
   EventMsgPayload,
   MessageContentPart,
   ModelStep,
@@ -92,6 +93,49 @@ function extractToolError(payload: EventMsgPayload): string | undefined {
   return undefined;
 }
 
+type McpToolCallItem = EventMsgItem & {
+  type: "McpToolCall" | "mcpToolCall";
+  id: string;
+  server: string;
+  tool: string;
+};
+
+function isMcpToolCallItem(item: EventMsgItem | null | undefined): item is McpToolCallItem {
+  return (
+    (item?.type === "McpToolCall" || item?.type === "mcpToolCall") &&
+    typeof item.id === "string" &&
+    item.id.length > 0 &&
+    typeof item.server === "string" &&
+    item.server.length > 0 &&
+    typeof item.tool === "string" &&
+    item.tool.length > 0
+  );
+}
+
+function mcpToolCallDurationMs(item: EventMsgItem): number | undefined {
+  const durationMs = item.durationMs ?? item.duration_ms;
+  if (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0) {
+    return durationMs;
+  }
+
+  if (item.duration && typeof item.duration === "object") {
+    const duration = item.duration as { secs?: unknown; nanos?: unknown };
+    if (
+      typeof duration.secs === "number" &&
+      typeof duration.nanos === "number" &&
+      Number.isFinite(duration.secs) &&
+      Number.isFinite(duration.nanos) &&
+      duration.secs >= 0 &&
+      duration.nanos >= 0 &&
+      duration.nanos < 1_000_000_000
+    ) {
+      return duration.secs * 1_000 + duration.nanos / 1_000_000;
+    }
+  }
+
+  return undefined;
+}
+
 type MutableTurn = Turn & { lastAgentMessage?: string; userInputFallback?: string };
 
 const TURN_OPENING_EVENTS = new Set(["user_message", "item_completed", "agent_message"]);
@@ -174,6 +218,61 @@ export function parseSession(lines: RolloutLine[]): {
 
   const ensureTurn = (ts: number): MutableTurn => (turn ??= newTurn(ts));
   const ensureStep = (ts: number) => (step ??= newStep(ts));
+  const mcpCallStartTimes = new Map<string, number>();
+
+  const recordMcpToolCallItem = (
+    item: EventMsgItem | null | undefined,
+    ts: number,
+    completed: boolean,
+  ) => {
+    if (!isMcpToolCallItem(item)) return;
+
+    let tc = toolCallsById.get(item.id);
+    if (!tc) {
+      tc = {
+        callId: item.id,
+        name: item.tool,
+        args: item.arguments,
+        startTime: ts,
+        mcp: { server: item.server, tool: item.tool },
+      };
+      ensureStep(ts).toolCalls.push(tc);
+      toolCallsById.set(tc.callId, tc);
+    } else {
+      tc.mcp = { server: item.server, tool: item.tool };
+      if (item.arguments !== undefined) tc.args = item.arguments;
+    }
+
+    if (!completed) {
+      const startedAt = Math.min(mcpCallStartTimes.get(item.id) ?? ts, ts);
+      mcpCallStartTimes.set(item.id, startedAt);
+      tc.startTime = startedAt;
+      return;
+    }
+
+    const startedAt = mcpCallStartTimes.get(item.id);
+    const durationMs = mcpToolCallDurationMs(item);
+    if (startedAt !== undefined) tc.startTime = startedAt;
+    else if (durationMs !== undefined) tc.startTime = ts - durationMs;
+    tc.endTime = Math.max(tc.endTime ?? ts, ts);
+    if (item.result !== undefined) tc.output = item.result;
+    mcpCallStartTimes.delete(item.id);
+
+    const error =
+      item.error != null
+        ? extractToolError({ type: "mcp_tool_call", error: item.error })
+        : undefined;
+    if (error) {
+      tc.error = error;
+    } else if (
+      !tc.error &&
+      ["failed", "declined", "cancelled", "canceled", "interrupted", "error"].includes(
+        item.status ?? "",
+      )
+    ) {
+      tc.error = item.status;
+    }
+  };
 
   const recordSubagentThread = (threadId: string) => {
     if (!turn!.subagentThreadIds.includes(threadId)) {
@@ -212,6 +311,7 @@ export function parseSession(lines: RolloutLine[]): {
     }
     turn = null;
     toolCallsById = new Map();
+    mcpCallStartTimes.clear();
   };
 
   for (const line of lines) {
@@ -367,14 +467,19 @@ export function parseSession(lines: RolloutLine[]): {
         continue;
       }
 
-      if (TURN_OPENING_EVENTS.has(et)) ensureTurn(ts);
-      else if (!turn) continue;
+      if (TURN_OPENING_EVENTS.has(et) || (et === "item_started" && isMcpToolCallItem(p.item))) {
+        ensureTurn(ts);
+      } else if (!turn) continue;
 
-      if (et === "user_message" && typeof p.message === "string") {
+      if (et === "item_started" && isMcpToolCallItem(p.item)) {
+        recordMcpToolCallItem(p.item, ts, false);
+      } else if (et === "user_message" && typeof p.message === "string") {
         if (!turn!.userInput) turn!.userInput = p.message;
       } else if (et === "item_completed" && p.item?.type === "UserMessage") {
         const text = extractMessageText(p.item.content);
         if (text && !turn!.userInput) turn!.userInput = text;
+      } else if (et === "item_completed" && isMcpToolCallItem(p.item)) {
+        recordMcpToolCallItem(p.item, ts, true);
       } else if (et === "agent_message" && typeof p.message === "string") {
         turn!.lastAgentMessage = p.message;
       } else if (et === "token_count") {

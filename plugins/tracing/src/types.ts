@@ -118,6 +118,22 @@ export type TokenUsage = {
   reasoning_output_tokens?: number;
 };
 
+export type EventMsgItem = {
+  type?: string;
+  id?: string;
+  server?: string;
+  tool?: string;
+  status?: string;
+  duration?: unknown;
+  durationMs?: number;
+  duration_ms?: number;
+  arguments?: unknown;
+  result?: unknown;
+  error?: unknown;
+  content?: MessageContentPart[];
+  [key: string]: unknown;
+};
+
 export type EventMsgPayload = {
   type: string;
   turn_id?: string | null;
@@ -127,7 +143,7 @@ export type EventMsgPayload = {
     last_token_usage?: TokenUsage;
     model_context_window?: number;
   } | null;
-  item?: { type?: string; content?: MessageContentPart[] } | null;
+  item?: EventMsgItem | null;
   new_thread_id?: string | null;
   kind?: string;
   agent_thread_id?: string | null;
