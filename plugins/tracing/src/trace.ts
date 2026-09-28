@@ -486,6 +486,7 @@ async function emitTurn(
   try {
     const systemMessage = systemPromptText(turn.systemPrompt);
     const historyPrefix = ctx.historyPrefix ?? [];
+    const spawnObservations = new Map<string, LangfuseObservation>();
 
     for (let i = 0; i < turn.steps.length; i++) {
       const step = turn.steps[i];
@@ -515,7 +516,8 @@ async function emitTurn(
       );
 
       for (const tc of step.toolCalls) {
-        emitToolCall(tc, root, step.endTime);
+        const observation = emitToolCall(tc, root, step.endTime);
+        if (tc.name === "spawn_agent") spawnObservations.set(tc.callId, observation);
       }
 
       generation.end(new Date(generationEnd(step)));
@@ -536,7 +538,7 @@ async function emitTurn(
       const seedBeforeChild = currentIdSeed();
       await convertRollout(sub.file, {
         config: ctx.config,
-        parentObservation: root,
+        parentObservation: spawnObservations.get(turn.subagentSpawnCallIds[sub.threadId]) ?? root,
         subagentIndex: ctx.subagentIndex,
         seenThreadIds: ctx.seenThreadIds,
         ancestorTurnIds: ctx.inheritableTurnIds,
@@ -559,7 +561,11 @@ async function emitTurn(
   if (failure && ctx.config.fail_on_error) throw failure;
 }
 
-function emitToolCall(tc: ToolCall, parent: LangfuseObservation, fallbackEnd: number): void {
+function emitToolCall(
+  tc: ToolCall,
+  parent: LangfuseObservation,
+  fallbackEnd: number,
+): LangfuseObservation {
   const tool = startObservation(
     toolObservationName(tc),
     {
@@ -576,6 +582,7 @@ function emitToolCall(tc: ToolCall, parent: LangfuseObservation, fallbackEnd: nu
     },
   );
   tool.end(new Date(tc.endTime ?? fallbackEnd));
+  return tool;
 }
 
 function isFinal(

@@ -103,6 +103,7 @@ function newTurn(startTime: number): MutableTurn {
     endTime: startTime,
     steps: [],
     subagentThreadIds: [],
+    subagentSpawnCallIds: {},
     promptSkills: [],
     userImages: [],
     toolDefinitions: [],
@@ -175,10 +176,11 @@ export function parseSession(lines: RolloutLine[]): {
   const ensureTurn = (ts: number): MutableTurn => (turn ??= newTurn(ts));
   const ensureStep = (ts: number) => (step ??= newStep(ts));
 
-  const recordSubagentThread = (threadId: string) => {
+  const recordSubagentThread = (threadId: string, spawnCallId?: string) => {
     if (!turn!.subagentThreadIds.includes(threadId)) {
       turn!.subagentThreadIds.push(threadId);
     }
+    if (spawnCallId) turn!.subagentSpawnCallIds[threadId] = spawnCallId;
   };
 
   const closeStep = (ts: number, usage?: TokenUsage) => {
@@ -323,7 +325,7 @@ export function parseSession(lines: RolloutLine[]): {
               spawned !== null && typeof spawned === "object"
                 ? (spawned as { agent_id?: unknown }).agent_id
                 : undefined;
-            if (typeof agentId === "string" && agentId) recordSubagentThread(agentId);
+            if (typeof agentId === "string" && agentId) recordSubagentThread(agentId, tc.callId);
           }
         }
       } else if (p.type === "tool_search_output") {
@@ -375,6 +377,10 @@ export function parseSession(lines: RolloutLine[]): {
       } else if (et === "item_completed" && p.item?.type === "UserMessage") {
         const text = extractMessageText(p.item.content);
         if (text && !turn!.userInput) turn!.userInput = text;
+      } else if (et === "item_completed" && p.item?.type === "SubAgentActivity") {
+        if (p.item.kind === "started" && typeof p.item.agent_thread_id === "string") {
+          recordSubagentThread(p.item.agent_thread_id, p.item.id);
+        }
       } else if (et === "agent_message" && typeof p.message === "string") {
         turn!.lastAgentMessage = p.message;
       } else if (et === "token_count") {
@@ -386,14 +392,14 @@ export function parseSession(lines: RolloutLine[]): {
         finishTurn(ts, { completed: true, aborted: true });
       } else {
         if (et === "collab_agent_spawn_end" && typeof p.new_thread_id === "string") {
-          recordSubagentThread(p.new_thread_id);
+          recordSubagentThread(p.new_thread_id, p.call_id);
         }
         if (
           et === "sub_agent_activity" &&
           p.kind === "started" &&
           typeof p.agent_thread_id === "string"
         ) {
-          recordSubagentThread(p.agent_thread_id);
+          recordSubagentThread(p.agent_thread_id, p.event_id);
         }
         if (
           (et === "mcp_tool_call_begin" || et === "mcp_tool_call_end") &&

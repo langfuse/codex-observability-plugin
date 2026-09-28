@@ -465,6 +465,9 @@ describe("convertRollout", () => {
     expect(childTurns).toHaveLength(1);
     const child = childTurns[0];
     expect(child.spanContext().traceId).toBe(parent!.spanContext().traceId);
+    const spawn = spans.find((s) => s.name === "spawn_agent");
+    expect(spawn).toBeDefined();
+    expect(parentId(child)).toBe(spawn!.spanContext().spanId);
     expect(attr(child, "langfuse.observation.input")).toContain("hottest chilli");
 
     const childGeneration = spans.find(
@@ -1136,7 +1139,9 @@ describe("attached mode (external parent span)", () => {
     const subagentTurn = roots.find((s) => s.name === "Codex Subagent Turn")!;
 
     expect(parentId(parentTurn)).toBe(EXTERNAL_SPAN_ID);
-    expect(parentId(subagentTurn)).toBe(parentTurn.spanContext().spanId);
+    const spawn = exporter.getFinishedSpans().find((s) => s.name === "spawn_agent")!;
+    expect(parentId(spawn)).toBe(parentTurn.spanContext().spanId);
+    expect(parentId(subagentTurn)).toBe(spawn.spanContext().spanId);
     expect(subagentTurn.attributes["langfuse.internal.is_app_root"]).toBeUndefined();
   });
 
