@@ -271,6 +271,62 @@ describe("convertRollout", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("bounds repeated generation input while keeping a large one-step prompt", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-long-"));
+    const day = path.join(dir, "sessions", "2026", "06", "03");
+    fs.mkdirSync(day, { recursive: true });
+    const timestamp = "2026-06-03T09:00:00Z";
+    for (const steps of [1, 80]) {
+      const file = path.join(day, `rollout-${steps}.jsonl`);
+      const lines: unknown[] = [
+        { timestamp, type: "session_meta", payload: { id: `sess-${steps}` } },
+        { timestamp, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } },
+        {
+          timestamp,
+          type: "event_msg",
+          payload: { type: "user_message", message: "x".repeat(1_000_000) },
+        },
+      ];
+      for (let step = 0; step < steps; step++)
+        lines.push(
+          {
+            timestamp,
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: `Answer ${step}` }],
+            },
+          },
+          { timestamp, type: "event_msg", payload: { type: "token_count", info: {} } },
+        );
+      lines.push({
+        timestamp,
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t1" },
+      });
+      fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join("\n"));
+      await convertAndMark(file, { config: baseConfig, stoppedTurnId: "t1" });
+      const generations = exporter
+        .getFinishedSpans()
+        .filter((span) => obsType(span) === "generation");
+      expect(generations).toHaveLength(steps);
+      const input = JSON.parse(attr(generations.at(-1)!, "langfuse.observation.input"));
+      if (steps === 1) expect(input[0].content).toHaveLength(1_000_000);
+      else
+        expect(input).toEqual([
+          {
+            role: "system",
+            content:
+              "[Generation input omitted from trace: estimated repeated context exceeds 64 MB]",
+          },
+        ]);
+      expect(attr(turnRoots()[0]!, "langfuse.observation.input")).toHaveLength(1_000_000);
+      exporter.reset();
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("sends attached images as multimodal content and the loaded tools on the call", async () => {
     const URI = "data:image/png;base64,iVBORw0KGgo=";
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-media-"));
