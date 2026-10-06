@@ -70,6 +70,14 @@ The remaining options are settable both ways, as a `langfuse.json` key or as the
 
 Everything the plugin traces is uploaded to Langfuse, including prompts and tool inputs and outputs, so do not enable it for sessions containing data you do not want stored there.
 
+### Large rollouts
+
+Rollouts are read as a stream using a fixed file-size snapshot. Records over 8 MiB are discarded without decoding, and further non-boundary records in a turn are omitted after its 32 MiB budget. Turn boundaries are still processed, so an oversized tool output does not prevent earlier or later turns from being traced. Affected turn spans carry `codex.rollout.truncated=true`. Retained system/tool context is capped at 4 MiB and labelled `codex.system_prompt.truncated` when incomplete. Routing metadata is bounded too; `codex.routing.truncated` indicates degraded subagent attribution rather than aborting the session.
+
+Generation inputs use a 256 KiB recent-history window. Whole old turns/steps are evicted to preserve assistant/tool-call relationships. The system message and current user message are retained separately, with labelled excerpts if either is too large; oversized history groups or tool schemas may be omitted. `codex.generation_input.truncated=true` makes this degradation explicit. Later small inputs remain useful rather than being permanently replaced with an omission placeholder.
+
+Exports are flushed after at most 32 ended spans or approximately 4 MiB of span attributes, and at the end of the hook. A turn is checkpointed only after it has completed and all its sampled spans have been confirmed exported. Preprocessing drops leave only the affected turns retryable; transport failures leave the unconfirmed batch retryable. This batches catch-up work within the hook's 30-second timeout budget instead of requiring one HTTP request per turn. It is not a guarantee against slow networks or unusually large sessions; confirmed progress survives interruption.
+
 ## Contributing
 
 See the [contributing guide](./CONTRIBUTING.md).

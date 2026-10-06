@@ -112,7 +112,7 @@ function newTurn(startTime: number): MutableTurn {
   };
 }
 
-function sessionMetaFrom(line: RolloutLine): SessionMeta {
+export function sessionMetaFrom(line: RolloutLine): SessionMeta {
   const p = line.payload as RolloutLine["payload"] & {
     id?: string;
     cli_version?: string;
@@ -131,15 +131,21 @@ function sessionMetaFrom(line: RolloutLine): SessionMeta {
   };
 }
 
-export function parseSession(lines: RolloutLine[]): {
-  sessionMeta: SessionMeta;
-  turns: Turn[];
-} {
-  const ownHeader = lines.find((line) => line.type === "session_meta");
-  const sessionMeta: SessionMeta = ownHeader
-    ? sessionMetaFrom(ownHeader)
-    : { sessionId: "unknown" };
-  const turns: Turn[] = [];
+/** Incremental state machine; callers drain completed turns after each record. */
+export function createSessionParser(sessionMeta: SessionMeta, maxContextBytes = Infinity) {
+  let turns: Turn[] = [];
+  let contextBytes = Buffer.byteLength(sessionMeta.baseInstructions ?? "");
+  let contextTruncated = contextBytes > maxContextBytes;
+  const baseInstructions = contextTruncated ? undefined : sessionMeta.baseInstructions;
+  if (contextTruncated) contextBytes = 0;
+  const addContextBytes = (bytes: number) => {
+    if (contextBytes + bytes > maxContextBytes) {
+      contextTruncated = true;
+      return false;
+    }
+    contextBytes += bytes;
+    return true;
+  };
 
   let turn: MutableTurn | null = null;
   let step: ModelStep | null = null;
@@ -152,18 +158,21 @@ export function parseSession(lines: RolloutLine[]): {
   let exportedSegmentCount = 0;
 
   const collect = (into: string[], text: string) => {
-    if (!into.includes(text)) into.push(text);
+    if (!into.includes(text) && addContextBytes(Buffer.byteLength(text))) {
+      into.push(text);
+    }
   };
 
   const systemPromptFor = (): SystemPrompt | undefined => {
-    const base = sessionMeta.baseInstructions;
+    const base = baseInstructions;
     const segmentCount = (base ? 1 : 0) + developerMessages.length + injectedContext.length;
-    if (segmentCount === 0) return undefined;
+    if (segmentCount === 0 && !contextTruncated) return undefined;
     const snapshot: SystemPrompt = {
       baseInstructions: base,
       developerMessages: [...developerMessages],
       injectedContext: [...injectedContext],
       changed: segmentCount !== exportedSegmentCount,
+      ...(contextTruncated ? { truncated: true } : {}),
     };
     exportedSegmentCount = segmentCount;
     return snapshot;
@@ -216,7 +225,7 @@ export function parseSession(lines: RolloutLine[]): {
     toolCallsById = new Map();
   };
 
-  for (const line of lines) {
+  const processLine = (line: RolloutLine) => {
     const ts = Number.isFinite(Date.parse(line.timestamp))
       ? Date.parse(line.timestamp)
       : lastTimestamp;
@@ -229,7 +238,7 @@ export function parseSession(lines: RolloutLine[]): {
       const effort = typeof p.effort === "string" ? p.effort : p.reasoning_effort;
       if (typeof effort === "string") t.reasoningEffort = effort;
       t.invocationParams = line.payload as Record<string, unknown>;
-      continue;
+      return;
     }
 
     if (line.type === "response_item") {
@@ -339,6 +348,7 @@ export function parseSession(lines: RolloutLine[]): {
             const tool = raw as { name?: unknown; description?: unknown; parameters?: unknown };
             if (typeof tool.name !== "string" || !tool.name) continue;
             if (toolDefinitions.some((known) => known.name === tool.name)) continue;
+            if (!addContextBytes(Buffer.byteLength(JSON.stringify(tool)))) continue;
             toolDefinitions.push({
               name: tool.name,
               ...(typeof tool.description === "string" ? { description: tool.description } : {}),
@@ -355,22 +365,27 @@ export function parseSession(lines: RolloutLine[]): {
           s.reasoning = s.reasoning ? `${s.reasoning}\n${reasoning}` : reasoning;
         }
       }
-      continue;
+      return;
     }
 
     if (line.type === "event_msg") {
       const p = line.payload as EventMsgPayload;
       const et = p.type;
 
+      if (et === "langfuse_record_omitted") {
+        ensureTurn(ts).truncated = true;
+        return;
+      }
+
       if (et === "task_started") {
         if (turn) finishTurn(ts, { completed: false, aborted: false });
         turn = newTurn(ts);
         turn.turnId = typeof p.turn_id === "string" ? p.turn_id : undefined;
-        continue;
+        return;
       }
 
       if (TURN_OPENING_EVENTS.has(et)) ensureTurn(ts);
-      else if (!turn) continue;
+      else if (!turn) return;
 
       if (et === "user_message" && typeof p.message === "string") {
         if (!turn!.userInput) turn!.userInput = p.message;
@@ -434,11 +449,33 @@ export function parseSession(lines: RolloutLine[]): {
           }
         }
       }
-      continue;
+      return;
     }
-  }
+  };
 
-  if (turn) finishTurn(lastTimestamp, { completed: false, aborted: false });
+  const drain = (): Turn[] => {
+    const ready = turns;
+    turns = [];
+    return ready;
+  };
+  return {
+    push(line: RolloutLine): Turn[] {
+      processLine(line);
+      return drain();
+    },
+    finish(): Turn[] {
+      if (turn) finishTurn(lastTimestamp, { completed: false, aborted: false });
+      return drain();
+    },
+  };
+}
 
+export function parseSession(lines: RolloutLine[]): { sessionMeta: SessionMeta; turns: Turn[] } {
+  const header = lines.find((line) => line.type === "session_meta");
+  const sessionMeta = header ? sessionMetaFrom(header) : { sessionId: "unknown" };
+  const parser = createSessionParser(sessionMeta);
+  const turns: Turn[] = [];
+  for (const line of lines) turns.push(...parser.push(line));
+  turns.push(...parser.finish());
   return { sessionMeta, turns };
 }
