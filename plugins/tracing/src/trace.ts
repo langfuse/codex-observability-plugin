@@ -1,7 +1,6 @@
-import { createReadStream, type Dirent } from "node:fs";
+import { type Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { createInterface } from "node:readline";
 
 import {
   createTraceId,
@@ -15,7 +14,8 @@ import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
 import { currentIdSeed, seedIds } from "./instrumentation.js";
-import { parseArgs, parseSession } from "./parse.js";
+import { parseArgs } from "./parse.js";
+import { readRollout, readRolloutMeta, readTurns } from "./rollout.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
 import { skillsForToolCall, traceTags } from "./skills.js";
 import type {
@@ -31,20 +31,7 @@ import type {
 } from "./types.js";
 import { debugLog, toText } from "./utils.js";
 
-async function loadSession(file: string): Promise<RolloutLine[]> {
-  const lines: RolloutLine[] = [];
-  const input = createReadStream(file, { encoding: "utf-8" });
-  for await (const raw of createInterface({ input, crlfDelay: Infinity })) {
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-    try {
-      lines.push(JSON.parse(trimmed) as RolloutLine);
-    } catch {
-      // skip malformed lines rather than aborting the whole upload
-    }
-  }
-  return lines;
-}
+const MAX_ROUTING_BYTES = 8 * 1024 * 1024;
 
 type SubagentRollout = {
   threadId: string;
@@ -104,6 +91,7 @@ export async function buildSubagentIndex(
   const fromDay = path.relative(root, path.dirname(rolloutFile));
   const bounded = !options.includeEarlierDays && /^\d{4}\/\d{2}\/\d{2}$/.test(fromDay);
   const index: SubagentIndex = { byParent: new Map(), byThread: new Map() };
+  let indexBytes = 0;
 
   async function walk(dir: string, rel: string): Promise<void> {
     if (bounded && rel && rel < fromDay.slice(0, rel.length)) return;
@@ -130,6 +118,8 @@ export async function buildSubagentIndex(
         startTime: meta.startTime,
         nickname: meta.nickname,
       };
+      indexBytes += Buffer.byteLength(JSON.stringify(rollout));
+      if (indexBytes > MAX_ROUTING_BYTES) throw new Error("Subagent index exceeds memory limit");
       index.byThread.set(meta.threadId, rollout);
       if (!meta.parentThreadId) continue;
       index.byParent.set(meta.parentThreadId, [
@@ -143,18 +133,31 @@ export async function buildSubagentIndex(
   return index;
 }
 
-function turnIndexByNickname(turns: Turn[]): Map<string, number> {
-  const byNickname = new Map<string, number>();
-  const ambiguous = new Set<string>();
-  turns.forEach((turn, index) => {
-    for (const tc of turn.steps.flatMap((s) => s.toolCalls)) {
+type TurnSummary = Pick<Turn, "turnId" | "startTime" | "endTime" | "subagentThreadIds"> & {
+  nicknames: string[];
+};
+
+function spawnNicknames(turn: Turn): string[] {
+  const names: string[] = [];
+  for (const step of turn.steps) {
+    for (const tc of step.toolCalls) {
       if (tc.name !== "spawn_agent" || tc.output == null) continue;
       const out = parseArgs(toText(tc.output));
       const nickname =
         out !== null && typeof out === "object"
           ? (out as { nickname?: unknown }).nickname
           : undefined;
-      if (typeof nickname !== "string" || !nickname) continue;
+      if (typeof nickname === "string" && nickname) names.push(nickname);
+    }
+  }
+  return names;
+}
+
+function turnIndexByNickname(turns: TurnSummary[]): Map<string, number> {
+  const byNickname = new Map<string, number>();
+  const ambiguous = new Set<string>();
+  turns.forEach((turn, index) => {
+    for (const nickname of turn.nicknames) {
       if (byNickname.has(nickname) && byNickname.get(nickname) !== index) {
         ambiguous.add(nickname);
       }
@@ -165,7 +168,7 @@ function turnIndexByNickname(turns: Turn[]): Map<string, number> {
   return byNickname;
 }
 
-function turnIndexAt(turns: Turn[], startTime: number): number {
+function turnIndexAt(turns: TurnSummary[], startTime: number): number {
   const running = turns.findIndex((t) => startTime >= t.startTime && startTime <= t.endTime);
   if (running !== -1) return running;
   let last = 0;
@@ -367,22 +370,33 @@ function turnHistoryMessages(turn: Turn): ChatMlMessage[] {
   return messages;
 }
 
-function generationInput(
-  systemMessage: string | undefined,
-  historyPrefix: ChatMlMessage[],
-  turn: Turn,
-  stepIndex: number,
-): ChatMlMessage[] | undefined {
-  const messages: ChatMlMessage[] = [];
-  if (systemMessage) messages.push({ role: "system", content: systemMessage });
-  messages.push(...historyPrefix);
-  const user = userMessage(turn);
-  if (user) messages.push(user);
-  for (let j = 0; j < stepIndex; j++) {
-    messages.push(assistantMessage(turn.steps[j]));
-    messages.push(...toolMessages(turn.steps[j]));
+export const MAX_GENERATION_INPUT_BYTES = 256 * 1024;
+const OMITTED_INPUT = [
+  {
+    role: "system" as const,
+    content:
+      "[Generation input omitted from trace: context exceeds 256 KiB. See turn and tool spans for evidence.]",
+  },
+];
+
+/** Keep ordinary transcripts exact; stop retaining repeated history after the budget. */
+class GenerationHistory {
+  messages: ChatMlMessage[] = [];
+  bytes = 2;
+  omitted = false;
+
+  append(messages: ChatMlMessage[]): void {
+    if (this.omitted) return;
+    for (const message of messages) {
+      this.bytes += Buffer.byteLength(JSON.stringify(message)) + 1;
+      if (this.bytes > MAX_GENERATION_INPUT_BYTES) {
+        this.messages = [];
+        this.omitted = true;
+        return;
+      }
+      this.messages.push(message);
+    }
   }
-  return messages.length > 0 ? messages : undefined;
 }
 
 type ContentPart =
@@ -434,9 +448,11 @@ async function emitTurn(
     seenThreadIds: Set<string>;
     unannouncedSubagents?: SubagentRollout[];
     inheritableTurnIds?: ReadonlySet<string>;
-    historyPrefix?: ChatMlMessage[];
+    historyPrefix?: GenerationHistory;
+    flush?: () => Promise<void>;
+    depth?: number;
   },
-): Promise<void> {
+): Promise<boolean> {
   const isSubagent = sessionMeta.isSubagentThread === true || ctx.parentObservation != null;
 
   const outerSeed = currentIdSeed();
@@ -485,18 +501,29 @@ async function emitTurn(
   let failure: unknown;
   try {
     const systemMessage = systemPromptText(turn.systemPrompt);
-    const historyPrefix = ctx.historyPrefix ?? [];
+    const history = new GenerationHistory();
+    if (systemMessage) history.append([{ role: "system", content: systemMessage }]);
+    if (ctx.historyPrefix?.omitted) history.omitted = true;
+    else history.append(ctx.historyPrefix?.messages ?? []);
+    const user = userMessage(turn);
+    if (user) history.append([user]);
+    // Tool schemas are attached to every generation too.
+    history.bytes += Buffer.byteLength(JSON.stringify(turn.toolDefinitions));
+    if (history.bytes > MAX_GENERATION_INPUT_BYTES) history.omitted = true;
     const spawnObservations = new Map<string, LangfuseObservation>();
+    let pendingSpans = 0;
 
     for (let i = 0; i < turn.steps.length; i++) {
       const step = turn.steps[i];
       const generation = startObservation(
         isSubagent ? "LLM Subagent" : "LLM",
         {
-          input: attachToolDefinitions(
-            generationInput(systemMessage, historyPrefix, turn, i),
-            turn.toolDefinitions,
-          ),
+          input: history.omitted
+            ? OMITTED_INPUT
+            : attachToolDefinitions(
+                history.messages.length ? history.messages : undefined,
+                turn.toolDefinitions,
+              ),
           output: buildGenerationOutput(step),
           model: turn.model,
           ...(turn.reasoningEffort
@@ -505,6 +532,7 @@ async function emitTurn(
           usageDetails: toUsageDetails(step.usage),
           metadata: {
             "codex.step_index": i,
+            ...(history.omitted ? { "codex.generation_input.omitted": true } : {}),
             "codex.reasoning_effort": turn.reasoningEffort,
           },
         },
@@ -518,9 +546,18 @@ async function emitTurn(
       for (const tc of step.toolCalls) {
         const observation = emitToolCall(tc, root, step.endTime);
         if (tc.name === "spawn_agent") spawnObservations.set(tc.callId, observation);
+        if (++pendingSpans >= 32 && ctx.flush) {
+          await ctx.flush();
+          pendingSpans = 0;
+        }
       }
 
       generation.end(new Date(generationEnd(step)));
+      if (++pendingSpans >= 32 && ctx.flush) {
+        await ctx.flush();
+        pendingSpans = 0;
+      }
+      if (!history.omitted) history.append([assistantMessage(step), ...toolMessages(step)]);
     }
 
     const announced: SubagentRollout[] = [];
@@ -542,6 +579,8 @@ async function emitTurn(
         subagentIndex: ctx.subagentIndex,
         seenThreadIds: ctx.seenThreadIds,
         ancestorTurnIds: ctx.inheritableTurnIds,
+        flush: ctx.flush,
+        depth: (ctx.depth ?? 0) + 1,
       });
       seedIds(seedBeforeChild);
     }
@@ -559,6 +598,7 @@ async function emitTurn(
   root.end(new Date(turn.endTime));
   seedIds(outerSeed);
   if (failure && ctx.config.fail_on_error) throw failure;
+  return failure === undefined;
 }
 
 function emitToolCall(
@@ -596,7 +636,7 @@ function isFinal(
 
 async function readTurnIds(file: string): Promise<Set<string>> {
   const ids = new Set<string>();
-  for (const line of await loadSession(file)) {
+  for await (const { line } of readRollout(file, (await fs.stat(file)).size)) {
     if (line.type !== "event_msg") continue;
     const p = line.payload as EventMsgPayload;
     if (p.type === "task_started" && typeof p.turn_id === "string") ids.add(p.turn_id);
@@ -639,19 +679,32 @@ export async function convertRollout(
     seenThreadIds?: Set<string>;
     ancestorTurnIds?: ReadonlySet<string>;
     stoppedTurnId?: string;
+    flush?: () => Promise<void>;
+    onTurnExported?: (turnId: string) => Promise<void>;
+    depth?: number;
   },
 ): Promise<string[]> {
-  const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
-
-  const historyPrefixes: ChatMlMessage[][] = [];
-  {
-    const seen: ChatMlMessage[] = [];
-    for (const turn of turns) {
-      historyPrefixes.push([...seen]);
-      seen.push(...turnHistoryMessages(turn));
-    }
+  if ((options.depth ?? 0) > 16) throw new Error("Subagent nesting exceeds memory limit");
+  const size = (await fs.stat(rolloutFile)).size;
+  const sessionMeta = await readRolloutMeta(rolloutFile, size);
+  // The first pass keeps only routing metadata. A later spawn announcement can
+  // disambiguate an earlier child, so routing must be resolved before emission.
+  const turns: TurnSummary[] = [];
+  let routingBytes = 0;
+  for await (const turn of readTurns(rolloutFile, size, sessionMeta)) {
+    const summary = {
+      turnId: turn.turnId,
+      startTime: turn.startTime,
+      endTime: turn.endTime,
+      subagentThreadIds: turn.subagentThreadIds,
+      nicknames: spawnNicknames(turn),
+    };
+    routingBytes += Buffer.byteLength(JSON.stringify(summary));
+    if (routingBytes > MAX_ROUTING_BYTES) throw new Error("Turn index exceeds memory limit");
+    turns.push(summary);
   }
-  debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
+  const history = new GenerationHistory();
+  debugLog(`indexed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 
   const subagentIndex =
     options.subagentIndex ??
@@ -704,76 +757,87 @@ export async function convertRollout(
     if (turn.turnId) inheritableTurnIds.add(turn.turnId);
   }
 
-  if (options.parentObservation) {
-    for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
-      const turn = turns[turnIndex];
-      if (skipInherited(turn, turnIndex)) continue;
-      await emitTurn(turn, sessionMeta, {
-        config: options.config,
-        rolloutFile,
-        parentObservation: options.parentObservation,
-        subagentIndex,
-        seenThreadIds,
-        unannouncedSubagents: subagentsFor(turnIndex),
-        inheritableTurnIds,
-        historyPrefix: historyPrefixes[turnIndex],
-      });
-    }
-    return [];
-  }
-
   const uploaded = await loadUploadedTurnIds(rolloutFile);
   const exportedTurnIds: string[] = [];
   const attached = options.parentSpanContext != null;
 
-  for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
-    const turn = turns[turnIndex];
+  let turnIndex = -1;
+  for await (const turn of readTurns(rolloutFile, size, sessionMeta)) {
+    turnIndex++;
+    try {
+      if (skipInherited(turn, turnIndex)) continue;
 
-    if (skipInherited(turn, turnIndex)) continue;
+      if (options.parentObservation) {
+        const success = await emitTurn(turn, sessionMeta, {
+          config: options.config,
+          rolloutFile,
+          parentObservation: options.parentObservation,
+          subagentIndex,
+          seenThreadIds,
+          unannouncedSubagents: subagentsFor(turnIndex),
+          inheritableTurnIds,
+          historyPrefix: history,
+          flush: options.flush,
+          depth: options.depth,
+        });
+        await options.flush?.();
+        if (!success) throw new Error(`Subagent turn ${turn.turnId ?? "(no turn id)"} failed`);
+        continue;
+      }
 
-    if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
-      debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
-      continue;
+      if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
+        debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
+        continue;
+      }
+      if (uploaded.has(turn.turnId)) {
+        continue;
+      }
+
+      const parentSpanContext =
+        options.parentSpanContext ??
+        (await seededTraceParent(options.config, sessionMeta, turnIndex + 1));
+
+      const emit = () =>
+        emitTurn(turn, sessionMeta, {
+          config: options.config,
+          rolloutFile,
+          parentSpanContext,
+          attached,
+          subagentIndex,
+          seenThreadIds,
+          unannouncedSubagents: subagentsFor(turnIndex),
+          inheritableTurnIds,
+          historyPrefix: history,
+          flush: options.flush,
+          depth: options.depth,
+        });
+
+      let success: boolean;
+      if (attached) {
+        success = await emit();
+      } else {
+        const tags = traceTags(options.config, turn);
+        success = await propagateAttributes(
+          {
+            sessionId: sessionMeta.sessionId,
+            traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
+            ...(options.config.user_id ? { userId: options.config.user_id } : {}),
+            ...(tags.length > 0 ? { tags } : {}),
+            ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
+          },
+          emit,
+        );
+      }
+
+      await options.flush?.();
+      if (success) {
+        await options.onTurnExported?.(turn.turnId);
+        uploaded.add(turn.turnId);
+        exportedTurnIds.push(turn.turnId);
+      }
+    } finally {
+      if (!history.omitted) history.append(turnHistoryMessages(turn));
     }
-    if (uploaded.has(turn.turnId)) {
-      continue;
-    }
-
-    const parentSpanContext =
-      options.parentSpanContext ??
-      (await seededTraceParent(options.config, sessionMeta, turnIndex + 1));
-
-    const emit = () =>
-      emitTurn(turn, sessionMeta, {
-        config: options.config,
-        rolloutFile,
-        parentSpanContext,
-        attached,
-        subagentIndex,
-        seenThreadIds,
-        unannouncedSubagents: subagentsFor(turnIndex),
-        inheritableTurnIds,
-        historyPrefix: historyPrefixes[turnIndex],
-      });
-
-    if (attached) {
-      await emit();
-    } else {
-      const tags = traceTags(options.config, turn);
-      await propagateAttributes(
-        {
-          sessionId: sessionMeta.sessionId,
-          traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
-          ...(options.config.user_id ? { userId: options.config.user_id } : {}),
-          ...(tags.length > 0 ? { tags } : {}),
-          ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
-        },
-        emit,
-      );
-    }
-
-    uploaded.add(turn.turnId);
-    exportedTurnIds.push(turn.turnId);
   }
 
   return exportedTurnIds;

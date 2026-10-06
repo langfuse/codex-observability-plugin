@@ -80,7 +80,7 @@ describe("a turn whose conversion fails", () => {
   it("is exported as an ERROR trace and does not take the other turns with it", async () => {
     const exported = await convertRollout(stageRollout(), { config: baseConfig });
 
-    expect(exported).toEqual(["turn-1", "turn-2", "turn-3"]);
+    expect(exported).toEqual(["turn-1", "turn-3"]);
 
     const roots = exporter.getFinishedSpans().filter((s) => s.name === "Codex Turn");
     const byTurn = Object.fromEntries(
