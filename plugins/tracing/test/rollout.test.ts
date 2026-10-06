@@ -67,11 +67,17 @@ describe("bounded rollout reader", () => {
     expect(await records(file, size)).toHaveLength(1);
   });
 
-  it("rejects an oversized record before JSON decoding, including a record without a newline", async () => {
+  it("discards an oversized record before JSON decoding and resumes at the next newline", async () => {
     for (const suffix of ["", "\n"]) {
       const { file, size } = await stage("x".repeat(200_000) + suffix);
-      await expect(records(file, size, 100_000)).rejects.toThrow("record 1 exceeds 100000 bytes");
+      expect(await records(file, size, 100_000)).toEqual([
+        expect.objectContaining({ payload: { type: "langfuse_record_omitted" } }),
+      ]);
     }
+    const { file, size } = await stage(
+      "x".repeat(200_000) + "\n" + line("session_meta", { id: "after" }),
+    );
+    expect(await records(file, size, 100_000)).toHaveLength(2);
   });
 
   it("does not retain compaction snapshots", async () => {
@@ -89,7 +95,9 @@ describe("bounded rollout reader", () => {
         ),
       ].join("\n"),
     );
-    await expect(turns(file, size)).rejects.toThrow("Rollout turn exceeds 400 bytes");
+    const result = await turns(file, size);
+    expect(result.turns).toHaveLength(1);
+    expect(result.turns[0]).toMatchObject({ turnId: "t1", truncated: true });
   });
 
   it("bounds context retained across turns", async () => {
@@ -97,6 +105,7 @@ describe("bounded rollout reader", () => {
     const { file, size } = await stage(
       [
         line("session_meta", { id: "s", base_instructions: { text: "1234567890" } }),
+        line("event_msg", { type: "task_started", turn_id: "context-turn" }),
         line("response_item", {
           type: "message",
           role: "developer",
@@ -104,10 +113,11 @@ describe("bounded rollout reader", () => {
         }),
       ].join("\n"),
     );
-    await expect(turns(file, size)).rejects.toThrow("Rollout context exceeds memory limit");
+    const result = await turns(file, size);
+    expect(result.turns[0].systemPrompt).toMatchObject({ truncated: true });
   });
 
-  it("bounds the number of indexed turns and propagates file errors", async () => {
+  it("keeps reading turns beyond the routing-index limit and propagates file errors", async () => {
     ROLLOUT_LIMITS.turns = 1;
     const { file, size } = await stage(
       [
@@ -116,8 +126,29 @@ describe("bounded rollout reader", () => {
         line("event_msg", { type: "task_started", turn_id: "t2" }),
       ].join("\n"),
     );
-    await expect(turns(file, size)).rejects.toThrow("too many turns");
+    expect((await turns(file, size)).turns).toHaveLength(2);
     await fs.unlink(file);
     await expect(records(file, size)).rejects.toThrow("ENOENT");
+  });
+
+  it("keeps turn boundaries and later turns after the per-turn budget is exceeded", async () => {
+    ROLLOUT_LIMITS.turnBytes = 400;
+    const { file, size } = await stage(
+      [
+        line("event_msg", { type: "task_started", turn_id: "large" }),
+        ...Array.from({ length: 20 }, () =>
+          line("event_msg", { type: "user_message", message: "hi" }),
+        ),
+        line("event_msg", { type: "task_complete" }),
+        line("event_msg", { type: "task_started", turn_id: "small" }),
+        line("event_msg", { type: "user_message", message: "next" }),
+        line("event_msg", { type: "task_complete" }),
+      ].join("\n"),
+    );
+    const result = await turns(file, size);
+    expect(result.turns.map((t) => t.turnId)).toEqual(["large", "small"]);
+    expect(result.turns[0]).toMatchObject({ truncated: true, completed: true });
+    expect(result.turns[1]).toMatchObject({ userInput: "next", completed: true });
+    expect(result.turns[1].truncated).toBeUndefined();
   });
 });

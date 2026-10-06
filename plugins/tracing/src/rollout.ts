@@ -2,9 +2,10 @@ import { createReadStream } from "node:fs";
 
 import { createSessionParser, sessionMetaFrom } from "./parse.js";
 import type { RolloutLine, SessionMeta, Turn } from "./types.js";
+import { debugLog } from "./utils.js";
 
-// Limits apply before JSON decoding / retaining a turn. Fail with a retryable
-// error rather than letting an individual record or turn exhaust the heap.
+// Limits apply before JSON decoding / retaining a turn. Omit oversized data,
+// not the whole session, and explicitly label affected turns.
 export const ROLLOUT_LIMITS = {
   recordBytes: 8 * 1024 * 1024,
   turnBytes: 32 * 1024 * 1024,
@@ -22,15 +23,34 @@ export async function* readRollout(
   const input = createReadStream(file, { end: size - 1, highWaterMark: 64 * 1024 });
   let parts: Buffer[] = [];
   let bytes = 0;
+  let oversized = false;
   let lineNumber = 1;
   const append = (part: Buffer) => {
     bytes += part.length;
+    if (oversized) return;
     if (bytes > maxRecordBytes) {
-      throw new Error(`Rollout record ${lineNumber} exceeds ${maxRecordBytes} bytes: ${file}`);
+      debugLog(`Omitting rollout record ${lineNumber}: exceeds ${maxRecordBytes} bytes: ${file}`);
+      oversized = true;
+      parts = [];
+      return;
     }
     if (part.length) parts.push(part);
   };
   const decode = () => {
+    if (oversized) {
+      oversized = false;
+      parts = [];
+      bytes = 0;
+      lineNumber++;
+      return {
+        line: {
+          timestamp: "",
+          type: "event_msg",
+          payload: { type: "langfuse_record_omitted" },
+        } as RolloutLine,
+        bytes: 0,
+      };
+    }
     const raw = Buffer.concat(parts, bytes).toString("utf8");
     const recordBytes = bytes;
     parts = [];
@@ -88,17 +108,23 @@ export async function* readTurns(
 ): AsyncGenerator<Turn> {
   const parser = createSessionParser(sessionMeta, ROLLOUT_LIMITS.contextBytes);
   let turnBytes = 0;
-  let turnCount = 0;
   for await (const { line, bytes } of readRollout(file, size)) {
     if (line.type === "session_meta") continue;
     if (line.type === "event_msg" && line.payload.type === "task_started") turnBytes = 0;
     turnBytes += bytes;
-    if (turnBytes > ROLLOUT_LIMITS.turnBytes) {
-      throw new Error(`Rollout turn exceeds ${ROLLOUT_LIMITS.turnBytes} bytes: ${file}`);
+    const boundary =
+      line.type === "event_msg" &&
+      ["task_started", "task_complete", "turn_aborted"].includes(String(line.payload.type));
+    if (turnBytes > ROLLOUT_LIMITS.turnBytes && !boundary) {
+      parser.push({
+        timestamp: line.timestamp,
+        type: "event_msg",
+        payload: { type: "langfuse_record_omitted" },
+      } as RolloutLine);
+      continue;
     }
     const ready = parser.push(line);
     for (const turn of ready) {
-      if (++turnCount > ROLLOUT_LIMITS.turns) throw new Error("Rollout has too many turns");
       yield turn;
     }
     if (ready.length && !(line.type === "event_msg" && line.payload.type === "task_started")) {
@@ -106,7 +132,6 @@ export async function* readTurns(
     }
   }
   for (const turn of parser.finish()) {
-    if (++turnCount > ROLLOUT_LIMITS.turns) throw new Error("Rollout has too many turns");
     yield turn;
   }
 }

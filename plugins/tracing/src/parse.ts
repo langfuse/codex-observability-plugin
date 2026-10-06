@@ -135,11 +135,17 @@ export function sessionMetaFrom(line: RolloutLine): SessionMeta {
 export function createSessionParser(sessionMeta: SessionMeta, maxContextBytes = Infinity) {
   let turns: Turn[] = [];
   let contextBytes = Buffer.byteLength(sessionMeta.baseInstructions ?? "");
+  let contextTruncated = contextBytes > maxContextBytes;
+  const baseInstructions = contextTruncated ? undefined : sessionMeta.baseInstructions;
+  if (contextTruncated) contextBytes = 0;
   const addContextBytes = (bytes: number) => {
+    if (contextBytes + bytes > maxContextBytes) {
+      contextTruncated = true;
+      return false;
+    }
     contextBytes += bytes;
-    if (contextBytes > maxContextBytes) throw new Error("Rollout context exceeds memory limit");
+    return true;
   };
-  addContextBytes(0);
 
   let turn: MutableTurn | null = null;
   let step: ModelStep | null = null;
@@ -152,21 +158,21 @@ export function createSessionParser(sessionMeta: SessionMeta, maxContextBytes = 
   let exportedSegmentCount = 0;
 
   const collect = (into: string[], text: string) => {
-    if (!into.includes(text)) {
-      addContextBytes(Buffer.byteLength(text));
+    if (!into.includes(text) && addContextBytes(Buffer.byteLength(text))) {
       into.push(text);
     }
   };
 
   const systemPromptFor = (): SystemPrompt | undefined => {
-    const base = sessionMeta.baseInstructions;
+    const base = baseInstructions;
     const segmentCount = (base ? 1 : 0) + developerMessages.length + injectedContext.length;
-    if (segmentCount === 0) return undefined;
+    if (segmentCount === 0 && !contextTruncated) return undefined;
     const snapshot: SystemPrompt = {
       baseInstructions: base,
       developerMessages: [...developerMessages],
       injectedContext: [...injectedContext],
       changed: segmentCount !== exportedSegmentCount,
+      ...(contextTruncated ? { truncated: true } : {}),
     };
     exportedSegmentCount = segmentCount;
     return snapshot;
@@ -342,7 +348,7 @@ export function createSessionParser(sessionMeta: SessionMeta, maxContextBytes = 
             const tool = raw as { name?: unknown; description?: unknown; parameters?: unknown };
             if (typeof tool.name !== "string" || !tool.name) continue;
             if (toolDefinitions.some((known) => known.name === tool.name)) continue;
-            addContextBytes(Buffer.byteLength(JSON.stringify(tool)));
+            if (!addContextBytes(Buffer.byteLength(JSON.stringify(tool)))) continue;
             toolDefinitions.push({
               name: tool.name,
               ...(typeof tool.description === "string" ? { description: tool.description } : {}),
@@ -365,6 +371,11 @@ export function createSessionParser(sessionMeta: SessionMeta, maxContextBytes = 
     if (line.type === "event_msg") {
       const p = line.payload as EventMsgPayload;
       const et = p.type;
+
+      if (et === "langfuse_record_omitted") {
+        ensureTurn(ts).truncated = true;
+        return;
+      }
 
       if (et === "task_started") {
         if (turn) finishTurn(ts, { completed: false, aborted: false });

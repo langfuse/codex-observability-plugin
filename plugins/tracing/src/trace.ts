@@ -13,9 +13,10 @@ import {
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
-import { currentIdSeed, seedIds } from "./instrumentation.js";
+import { ExportBatch } from "./export-batch.js";
+import { currentIdSeed, seedIds, type ExportReceipt } from "./instrumentation.js";
 import { parseArgs } from "./parse.js";
-import { readRollout, readRolloutMeta, readTurns } from "./rollout.js";
+import { readRollout, readRolloutMeta, readTurns, ROLLOUT_LIMITS } from "./rollout.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
 import { skillsForToolCall, traceTags } from "./skills.js";
 import type {
@@ -44,6 +45,7 @@ type SubagentRollout = {
 export type SubagentIndex = {
   byParent: Map<string, SubagentRollout[]>;
   byThread: Map<string, SubagentRollout>;
+  truncated?: boolean;
 };
 
 async function readSessionMeta(
@@ -118,8 +120,12 @@ export async function buildSubagentIndex(
         startTime: meta.startTime,
         nickname: meta.nickname,
       };
-      indexBytes += Buffer.byteLength(JSON.stringify(rollout));
-      if (indexBytes > MAX_ROUTING_BYTES) throw new Error("Subagent index exceeds memory limit");
+      const bytes = Buffer.byteLength(JSON.stringify(rollout));
+      if (indexBytes + bytes > MAX_ROUTING_BYTES) {
+        index.truncated = true;
+        continue;
+      }
+      indexBytes += bytes;
       index.byThread.set(meta.threadId, rollout);
       if (!meta.parentThreadId) continue;
       index.byParent.set(meta.parentThreadId, [
@@ -309,6 +315,7 @@ function systemPromptMetadata(systemPrompt: SystemPrompt): Record<string, unknow
     "codex.system_prompt.injected_context_chars": injectedChars,
     "codex.system_prompt.injected_context_count": systemPrompt.injectedContext.length,
     "codex.system_prompt.changed_this_turn": systemPrompt.changed,
+    ...(systemPrompt.truncated ? { "codex.system_prompt.truncated": true } : {}),
   };
 }
 
@@ -371,32 +378,96 @@ function turnHistoryMessages(turn: Turn): ChatMlMessage[] {
 }
 
 export const MAX_GENERATION_INPUT_BYTES = 256 * 1024;
-const OMITTED_INPUT = [
-  {
-    role: "system" as const,
-    content:
-      "[Generation input omitted from trace: context exceeds 256 KiB. See turn and tool spans for evidence.]",
-  },
-];
+type HistoryGroup = { messages: ChatMlMessage[]; bytes: number };
 
-/** Keep ordinary transcripts exact; stop retaining repeated history after the budget. */
+const messageBytes = (messages: ChatMlMessage[]) =>
+  messages.reduce((bytes, message) => bytes + Buffer.byteLength(JSON.stringify(message)) + 1, 0);
+
+/** Evict whole turns/steps so a retained tool result keeps its assistant call. */
 class GenerationHistory {
-  messages: ChatMlMessage[] = [];
-  bytes = 2;
-  omitted = false;
+  private groups: HistoryGroup[] = [];
+  private bytes = 0;
+  truncated = false;
 
   append(messages: ChatMlMessage[]): void {
-    if (this.omitted) return;
-    for (const message of messages) {
-      this.bytes += Buffer.byteLength(JSON.stringify(message)) + 1;
-      if (this.bytes > MAX_GENERATION_INPUT_BYTES) {
-        this.messages = [];
-        this.omitted = true;
-        return;
-      }
-      this.messages.push(message);
+    const bytes = messageBytes(messages);
+    if (!messages.length) return;
+    if (bytes > MAX_GENERATION_INPUT_BYTES - 2) {
+      // One oversized group cannot fit, but later small groups still can.
+      this.truncated = true;
+      return;
+    }
+    this.groups.push({ messages, bytes });
+    this.bytes += bytes;
+    while (this.bytes > MAX_GENERATION_INPUT_BYTES - 2) {
+      this.bytes -= this.groups.shift()!.bytes;
+      this.truncated = true;
     }
   }
+
+  recent(budget: number): { messages: ChatMlMessage[]; bytes: number; truncated: boolean } {
+    let bytes = 0;
+    let first = this.groups.length;
+    while (first > 0 && bytes + this.groups[first - 1].bytes <= budget) {
+      bytes += this.groups[--first].bytes;
+    }
+    return {
+      messages: this.groups.slice(first).flatMap((group) => group.messages),
+      bytes,
+      truncated: this.truncated || first > 0,
+    };
+  }
+}
+
+function generationInput(
+  system: string | undefined,
+  user: ChatMlMessage | undefined,
+  prefix: GenerationHistory | undefined,
+  steps: GenerationHistory,
+  definitions: ToolDefinition[],
+): { input: unknown; truncated: boolean } {
+  let pinned: ChatMlMessage[] = [
+    ...(system ? [{ role: "system" as const, content: system }] : []),
+    ...(user ? [user] : []),
+  ];
+  let truncated = false;
+  // Reserve room for recent history even when a single prompt is enormous.
+  if (messageBytes(pinned) > MAX_GENERATION_INPUT_BYTES / 2) {
+    pinned = pinned.map((message) => {
+      if (messageBytes([message]) <= MAX_GENERATION_INPUT_BYTES / 4) return message;
+      let text = "content" in message ? toText(message.content) : toText(message);
+      let bounded: ChatMlMessage;
+      do {
+        text = text.slice(0, Math.floor(text.length / 2));
+        bounded = {
+          role: message.role === "system" ? "system" : "user",
+          content: `${text}\n[Input truncated; see turn span.]`,
+        };
+      } while (messageBytes([bounded]) > MAX_GENERATION_INPUT_BYTES / 4);
+      return bounded;
+    });
+    truncated = true;
+  }
+  let tools = definitions;
+  let toolsBytes = tools.length ? Buffer.byteLength(JSON.stringify(tools)) + 10 : 0;
+  if (toolsBytes > MAX_GENERATION_INPUT_BYTES / 4) {
+    tools = [];
+    toolsBytes = 0;
+    truncated = true;
+  }
+  const budget = MAX_GENERATION_INPUT_BYTES - messageBytes(pinned) - toolsBytes - 2;
+  const current = steps.recent(budget);
+  const previous = prefix?.recent(budget - current.bytes);
+  const messages = [
+    ...pinned.filter((message) => message.role === "system"),
+    ...(previous?.messages ?? []),
+    ...pinned.filter((message) => message.role === "user"),
+    ...current.messages,
+  ];
+  return {
+    input: attachToolDefinitions(messages.length ? messages : undefined, tools),
+    truncated: truncated || current.truncated || previous?.truncated === true,
+  };
 }
 
 type ContentPart =
@@ -449,7 +520,9 @@ async function emitTurn(
     unannouncedSubagents?: SubagentRollout[];
     inheritableTurnIds?: ReadonlySet<string>;
     historyPrefix?: GenerationHistory;
-    flush?: () => Promise<void>;
+    batch: ExportBatch;
+    spanIds: Set<string>;
+    routingTruncated?: boolean;
     depth?: number;
   },
 ): Promise<boolean> {
@@ -474,6 +547,10 @@ async function emitTurn(
         "codex.cli_version": sessionMeta.cliVersion,
         "codex.aborted": turn.aborted,
         "codex.tool_call_count": turn.steps.reduce((n, s) => n + s.toolCalls.length, 0),
+        ...(turn.truncated ? { "codex.rollout.truncated": true } : {}),
+        ...(ctx.routingTruncated || ctx.subagentIndex.truncated
+          ? { "codex.routing.truncated": true }
+          : {}),
         ...(ctx.attached && ctx.parentSpanContext
           ? {
               "codex.parent_trace_id": ctx.parentSpanContext.traceId,
@@ -502,28 +579,22 @@ async function emitTurn(
   try {
     const systemMessage = systemPromptText(turn.systemPrompt);
     const history = new GenerationHistory();
-    if (systemMessage) history.append([{ role: "system", content: systemMessage }]);
-    if (ctx.historyPrefix?.omitted) history.omitted = true;
-    else history.append(ctx.historyPrefix?.messages ?? []);
     const user = userMessage(turn);
-    if (user) history.append([user]);
-    // Tool schemas are attached to every generation too.
-    history.bytes += Buffer.byteLength(JSON.stringify(turn.toolDefinitions));
-    if (history.bytes > MAX_GENERATION_INPUT_BYTES) history.omitted = true;
     const spawnObservations = new Map<string, LangfuseObservation>();
-    let pendingSpans = 0;
 
     for (let i = 0; i < turn.steps.length; i++) {
       const step = turn.steps[i];
+      const input = generationInput(
+        systemMessage,
+        user,
+        ctx.historyPrefix,
+        history,
+        turn.toolDefinitions,
+      );
       const generation = startObservation(
         isSubagent ? "LLM Subagent" : "LLM",
         {
-          input: history.omitted
-            ? OMITTED_INPUT
-            : attachToolDefinitions(
-                history.messages.length ? history.messages : undefined,
-                turn.toolDefinitions,
-              ),
+          input: input.input,
           output: buildGenerationOutput(step),
           model: turn.model,
           ...(turn.reasoningEffort
@@ -532,7 +603,7 @@ async function emitTurn(
           usageDetails: toUsageDetails(step.usage),
           metadata: {
             "codex.step_index": i,
-            ...(history.omitted ? { "codex.generation_input.omitted": true } : {}),
+            ...(input.truncated ? { "codex.generation_input.truncated": true } : {}),
             "codex.reasoning_effort": turn.reasoningEffort,
           },
         },
@@ -546,18 +617,12 @@ async function emitTurn(
       for (const tc of step.toolCalls) {
         const observation = emitToolCall(tc, root, step.endTime);
         if (tc.name === "spawn_agent") spawnObservations.set(tc.callId, observation);
-        if (++pendingSpans >= 32 && ctx.flush) {
-          await ctx.flush();
-          pendingSpans = 0;
-        }
+        await ctx.batch.ended(observation, ctx.spanIds);
       }
 
       generation.end(new Date(generationEnd(step)));
-      if (++pendingSpans >= 32 && ctx.flush) {
-        await ctx.flush();
-        pendingSpans = 0;
-      }
-      if (!history.omitted) history.append([assistantMessage(step), ...toolMessages(step)]);
+      await ctx.batch.ended(generation, ctx.spanIds);
+      history.append([assistantMessage(step), ...toolMessages(step)]);
     }
 
     const announced: SubagentRollout[] = [];
@@ -579,7 +644,8 @@ async function emitTurn(
         subagentIndex: ctx.subagentIndex,
         seenThreadIds: ctx.seenThreadIds,
         ancestorTurnIds: ctx.inheritableTurnIds,
-        flush: ctx.flush,
+        batch: ctx.batch,
+        spanIds: ctx.spanIds,
         depth: (ctx.depth ?? 0) + 1,
       });
       seedIds(seedBeforeChild);
@@ -596,7 +662,11 @@ async function emitTurn(
   }
 
   root.end(new Date(turn.endTime));
-  seedIds(outerSeed);
+  try {
+    await ctx.batch.ended(root, ctx.spanIds);
+  } finally {
+    seedIds(outerSeed);
+  }
   if (failure && ctx.config.fail_on_error) throw failure;
   return failure === undefined;
 }
@@ -679,9 +749,11 @@ export async function convertRollout(
     seenThreadIds?: Set<string>;
     ancestorTurnIds?: ReadonlySet<string>;
     stoppedTurnId?: string;
-    flush?: () => Promise<void>;
+    flush?: () => Promise<ExportReceipt | void>;
     onTurnExported?: (turnId: string) => Promise<void>;
     depth?: number;
+    batch?: ExportBatch;
+    spanIds?: Set<string>;
   },
 ): Promise<string[]> {
   if ((options.depth ?? 0) > 16) throw new Error("Subagent nesting exceeds memory limit");
@@ -691,7 +763,11 @@ export async function convertRollout(
   // disambiguate an earlier child, so routing must be resolved before emission.
   const turns: TurnSummary[] = [];
   let routingBytes = 0;
+  let totalTurns = 0;
+  let routingTruncated = false;
   for await (const turn of readTurns(rolloutFile, size, sessionMeta)) {
+    totalTurns++;
+    if (routingTruncated) continue;
     const summary = {
       turnId: turn.turnId,
       startTime: turn.startTime,
@@ -699,12 +775,16 @@ export async function convertRollout(
       subagentThreadIds: turn.subagentThreadIds,
       nicknames: spawnNicknames(turn),
     };
-    routingBytes += Buffer.byteLength(JSON.stringify(summary));
-    if (routingBytes > MAX_ROUTING_BYTES) throw new Error("Turn index exceeds memory limit");
+    const bytes = Buffer.byteLength(JSON.stringify(summary));
+    if (turns.length >= ROLLOUT_LIMITS.turns || routingBytes + bytes > MAX_ROUTING_BYTES) {
+      routingTruncated = true;
+      continue;
+    }
+    routingBytes += bytes;
     turns.push(summary);
   }
   const history = new GenerationHistory();
-  debugLog(`indexed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
+  debugLog(`indexed ${turns.length} of ${totalTurns} turn(s) from ${path.basename(rolloutFile)}`);
 
   const subagentIndex =
     options.subagentIndex ??
@@ -716,7 +796,10 @@ export async function convertRollout(
 
   const announced = new Set(turns.flatMap((t) => t.subagentThreadIds));
   const unannounced = (subagentIndex.byParent.get(sessionMeta.sessionId) ?? []).filter(
-    (s) => !announced.has(s.threadId) && !seenThreadIds.has(s.threadId),
+    (s) =>
+      !announced.has(s.threadId) &&
+      !seenThreadIds.has(s.threadId) &&
+      (!routingTruncated || s.startTime <= (turns.at(-1)?.endTime ?? 0)),
   );
   const spawnTurnOf =
     unannounced.length > 0 ? turnIndexByNickname(turns) : new Map<string, number>();
@@ -760,6 +843,7 @@ export async function convertRollout(
   const uploaded = await loadUploadedTurnIds(rolloutFile);
   const exportedTurnIds: string[] = [];
   const attached = options.parentSpanContext != null;
+  const batch = options.batch ?? new ExportBatch(options.flush);
 
   let turnIndex = -1;
   for await (const turn of readTurns(rolloutFile, size, sessionMeta)) {
@@ -777,15 +861,16 @@ export async function convertRollout(
           unannouncedSubagents: subagentsFor(turnIndex),
           inheritableTurnIds,
           historyPrefix: history,
-          flush: options.flush,
+          batch,
+          spanIds: options.spanIds ?? new Set(),
+          routingTruncated,
           depth: options.depth,
         });
-        await options.flush?.();
         if (!success) throw new Error(`Subagent turn ${turn.turnId ?? "(no turn id)"} failed`);
         continue;
       }
 
-      if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
+      if (!isFinal(turn, options.stoppedTurnId, turnIndex < totalTurns - 1)) {
         debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
         continue;
       }
@@ -796,6 +881,7 @@ export async function convertRollout(
       const parentSpanContext =
         options.parentSpanContext ??
         (await seededTraceParent(options.config, sessionMeta, turnIndex + 1));
+      const spanIds = new Set<string>();
 
       const emit = () =>
         emitTurn(turn, sessionMeta, {
@@ -808,7 +894,9 @@ export async function convertRollout(
           unannouncedSubagents: subagentsFor(turnIndex),
           inheritableTurnIds,
           historyPrefix: history,
-          flush: options.flush,
+          batch,
+          spanIds,
+          routingTruncated,
           depth: options.depth,
         });
 
@@ -829,16 +917,26 @@ export async function convertRollout(
         );
       }
 
-      await options.flush?.();
-      if (success) {
-        await options.onTurnExported?.(turn.turnId);
-        uploaded.add(turn.turnId);
-        exportedTurnIds.push(turn.turnId);
-      }
+      batch.complete({
+        id: turn.turnId,
+        spanIds,
+        success,
+        checkpoint: async (id) => {
+          await options.onTurnExported?.(id);
+          uploaded.add(id);
+          exportedTurnIds.push(id);
+        },
+      });
     } finally {
-      if (!history.omitted) history.append(turnHistoryMessages(turn));
+      history.append(turnHistoryMessages(turn));
     }
   }
 
+  if (!options.batch) {
+    await batch.flush();
+    if (batch.incomplete && options.config.fail_on_error) {
+      throw new Error("Some turns were not completely delivered; they will be retried");
+    }
+  }
   return exportedTurnIds;
 }

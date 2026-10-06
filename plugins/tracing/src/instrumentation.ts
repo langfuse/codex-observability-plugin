@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { LangfuseSpanProcessor } from "@langfuse/otel";
 import { setLangfuseTracerProvider } from "@langfuse/tracing";
+import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 import { ExportResultCode } from "@opentelemetry/core";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import type { SpanExporter, SpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -41,10 +42,16 @@ function seededId(kind: "trace" | "span"): string {
 
 export type Instrumentation = {
   /** Wait for delivery; reject even if an automatic batch failed earlier. */
-  flush: () => Promise<void>;
+  flush: () => Promise<ExportReceipt>;
   /** Flush buffered spans and tear down the tracer provider. */
   shutdown: () => Promise<void>;
 };
+
+export type ExportReceipt = { failedSpanIds: ReadonlySet<string> };
+
+export function spanIdentity(context: SpanContext): string {
+  return `${context.traceId}:${context.spanId}`;
+}
 
 const DEFAULT_SERVICE_NAME = "codex";
 
@@ -62,14 +69,13 @@ function buildResource() {
  * instrumentation loading. Registering the provider also installs the
  * AsyncLocalStorage context manager that `propagateAttributes` relies on.
  *
- * Batch within turns, with explicit checkpoints to bound the export backlog.
+ * Batch across turns, with explicit checkpoints to bound the export backlog.
  * Track delivery independently: a background batch can fail before forceFlush,
  * and the SDK can swallow preprocessing errors or discard an overflowing queue.
  * Neither case may cause the hook to mark an undelivered turn uploaded.
  */
 export function setupInstrumentation(config: Config): Instrumentation {
-  let ended = 0;
-  let delivered = 0;
+  const pending = new Set<string>();
   let exportFailure: Error | undefined;
   const exporter = new OTLPTraceExporter({
     url: `${config.base_url.replace(/\/$/, "")}/api/public/otel/v1/traces`,
@@ -83,8 +89,9 @@ export function setupInstrumentation(config: Config): Instrumentation {
   const trackedExporter: SpanExporter = {
     export: (spans, callback) => {
       exporter.export(spans, (result) => {
-        if (result.code === ExportResultCode.SUCCESS) delivered += spans.length;
-        else exportFailure ??= result.error ?? new Error("Span export failed");
+        if (result.code === ExportResultCode.SUCCESS) {
+          for (const span of spans) pending.delete(spanIdentity(span.spanContext()));
+        } else exportFailure ??= result.error ?? new Error("Span export failed");
         callback(result);
       });
     },
@@ -103,7 +110,9 @@ export function setupInstrumentation(config: Config): Instrumentation {
   const trackedProcessor: SpanProcessor = {
     onStart: (span, context) => spanProcessor.onStart(span, context),
     onEnd: (span) => {
-      ended++;
+      if (span.spanContext().traceFlags & TraceFlags.SAMPLED) {
+        pending.add(spanIdentity(span.spanContext()));
+      }
       spanProcessor.onEnd(span);
     },
     forceFlush: () => spanProcessor.forceFlush(),
@@ -111,11 +120,21 @@ export function setupInstrumentation(config: Config): Instrumentation {
   };
 
   const flush = async () => {
-    await spanProcessor.forceFlush();
-    if (exportFailure) throw exportFailure;
-    if (delivered !== ended) {
-      throw new Error(`Incomplete span export: confirmed ${delivered} of ${ended} spans`);
+    let flushFailure: unknown;
+    try {
+      await spanProcessor.forceFlush();
+    } catch (error) {
+      flushFailure = error;
     }
+    // forceFlush waits for preprocessing and the export queue. Anything still
+    // pending was dropped; report it only for this window, not every future turn.
+    const failedSpanIds = new Set(pending);
+    pending.clear();
+    const failure = exportFailure;
+    exportFailure = undefined;
+    if (flushFailure) throw flushFailure;
+    if (failure) throw failure;
+    return { failedSpanIds };
   };
 
   const provider = new NodeTracerProvider({

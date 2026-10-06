@@ -1,4 +1,4 @@
-// Usage: node scripts/benchmark-rollout.mjs [bundle] [turns] [tool-output-bytes]
+// Usage: node scripts/benchmark-rollout.mjs [bundle] [turns] [tool-output-bytes] [request-delay-ms]
 // Runs the real bundled hook under a 128 MiB heap against a local OTLP receiver.
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 const bundle = resolve(process.argv[2] ?? "plugins/tracing/dist/index.mjs");
 const turns = Number(process.argv[3] ?? 200);
 const outputBytes = Number(process.argv[4] ?? 200_000);
+const requestDelayMs = Number(process.argv[5] ?? 0);
 const dir = await mkdtemp(join(tmpdir(), "codex-rollout-benchmark-"));
 const sessions = join(dir, "sessions/2026/10/05");
 await mkdir(sessions, { recursive: true });
@@ -53,12 +54,13 @@ let spans = 0;
 const server = createServer((req, res) => {
   const chunks = [];
   req.on("data", (chunk) => chunks.push(chunk));
-  req.on("end", () => {
+  req.on("end", async () => {
     requests++;
     const payload = JSON.parse(Buffer.concat(chunks).toString());
     for (const resource of payload.resourceSpans ?? []) {
       for (const scope of resource.scopeSpans ?? []) spans += scope.spans.length;
     }
+    if (requestDelayMs) await new Promise((resolve) => setTimeout(resolve, requestDelayMs));
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end("{}");
   });
@@ -107,6 +109,7 @@ try {
       {
         bundle,
         turns,
+        requestDelayMs,
         rolloutBytes: (await stat(rollout)).size,
         elapsedMs: Math.round(performance.now() - started),
         ...result,

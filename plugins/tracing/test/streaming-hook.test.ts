@@ -29,7 +29,10 @@ async function stage(count = 3, outputBytes = 32) {
       }) + "\n",
     );
   };
-  await line("session_meta", { id: "streaming-session" });
+  await line("session_meta", {
+    id: "streaming-session",
+    base_instructions: { text: "You are a helpful coding assistant." },
+  });
   for (let i = 1; i <= count; i++) {
     await line("event_msg", { type: "task_started", turn_id: `turn-${i}` });
     await line("event_msg", { type: "user_message", message: `question ${i}` });
@@ -142,7 +145,7 @@ const ok = (res: http.ServerResponse) => {
 describe("streaming delivery checkpoints", () => {
   for (const mode of ["rejection", "interruption"] as const) {
     it(`retries unfinished turns after ${mode}, preserving ids and confirmed checkpoints`, async () => {
-      const { dir, file } = await stage();
+      const { dir, file } = await stage(20);
       let child: ChildProcessWithoutNullStreams;
       let attempt = 0;
       const requests: WireSpan[][][] = [[], []];
@@ -165,37 +168,43 @@ describe("streaming delivery checkpoints", () => {
         child = first.child;
         const failure = await first.result;
         expect(failure.code).not.toBe(0);
-        expect(marksAtFailure).toEqual(["turn-1"]);
-        expect(await sidecar(file)).toEqual(["turn-1"]);
+        const confirmed = Array.from({ length: 7 }, (_, i) => `turn-${i + 1}`);
+        expect(marksAtFailure).toEqual(confirmed);
+        expect(await sidecar(file)).toEqual(confirmed);
         attempt = 1;
         const retry = await run(dir, file, server.port).result;
         expect(retry.code, retry.stderr).toBe(0);
-        expect(await sidecar(file)).toEqual(["turn-1", "turn-2", "turn-3"]);
-        const identities = (spans: WireSpan[]) =>
-          spans.map(({ traceId, spanId }) => ({ traceId, spanId }));
-        expect(identities(requests[1][0])).toEqual(identities(requests[0][1]));
-        expect(requests[1]).toHaveLength(2);
+        expect(await sidecar(file)).toEqual(Array.from({ length: 20 }, (_, i) => `turn-${i + 1}`));
+        const retried = new Set(requests[1].flat().map((s) => `${s.traceId}:${s.spanId}`));
+        expect(requests[0][1].every((s) => retried.has(`${s.traceId}:${s.spanId}`))).toBe(true);
+        expect(requests[1].length).toBeLessThan(20);
       } finally {
         await server.close();
       }
     });
   }
 
-  it("processes growing history under a 128 MiB heap and explicitly labels omitted repeated input", async () => {
+  it("keeps current prompts and recent history under a 128 MiB heap instead of permanently omitting input", async () => {
     const { dir, file } = await stage(120, 100_000);
     let spanCount = 0;
-    let omitted = 0;
+    let truncated = 0;
+    const inputs: string[] = [];
     let intactToolOutputs = 0;
     const server = await receiver((body, res) => {
       const spans = parseSpans(body);
       spanCount += spans.length;
-      omitted += spans.filter((s) =>
+      truncated += spans.filter((s) =>
         s.attributes.some(
           (a) =>
-            a.key.endsWith("codex.generation_input.omitted") &&
+            a.key.endsWith("codex.generation_input.truncated") &&
             (a.value.boolValue === true || a.value.stringValue === "true"),
         ),
       ).length;
+      for (const span of spans.filter((s) => s.name === "LLM")) {
+        const input = span.attributes.find((a) => a.key === "langfuse.observation.input")?.value
+          .stringValue;
+        if (input) inputs.push(input);
+      }
       intactToolOutputs += spans.filter(
         (s) =>
           s.name === "exec_command" &&
@@ -212,29 +221,83 @@ describe("streaming delivery checkpoints", () => {
       expect(result.code, result.stderr).toBe(0);
       expect(spanCount).toBe(120 * 4);
       expect(intactToolOutputs).toBe(120);
-      expect(omitted).toBeGreaterThan(0);
+      expect(truncated).toBeGreaterThan(0);
+      expect(inputs).toHaveLength(240);
+      for (const input of inputs) {
+        expect(Buffer.byteLength(input)).toBeLessThanOrEqual(256 * 1024);
+        expect(input).toContain("You are a helpful coding assistant.");
+        expect(input).toMatch(/question \d+/);
+        expect(input).not.toContain("Generation input omitted");
+      }
+      expect(inputs.at(-1)).toContain("question 120");
+      expect(inputs.at(-1)).toContain("question 119");
+      expect(inputs.at(-1)).not.toContain('"question 1"');
       expect(await sidecar(file)).toHaveLength(120);
     } finally {
       await server.close();
     }
   }, 20_000);
 
-  it("reports an oversized record without acknowledging the turn", async () => {
-    const { dir, file } = await stage(1);
-    await fs.appendFile(file, "x".repeat(8 * 1024 * 1024 + 1));
+  it("labels an oversized tool output and delivers earlier and later turns on every invocation", async () => {
+    const { dir, file } = await stage(3);
+    const contents =
+      (await fs.readFile(file, "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((raw) => {
+          const record = JSON.parse(raw);
+          if (
+            record.payload.type === "function_call_output" &&
+            record.payload.call_id === "call-2"
+          ) {
+            record.payload.output = "x".repeat(8 * 1024 * 1024 + 1);
+          }
+          return JSON.stringify(record);
+        })
+        .join("\n") + "\n";
+    await fs.writeFile(file, contents);
     let requests = 0;
-    const server = await receiver((_body, res) => {
+    const received: WireSpan[] = [];
+    const server = await receiver((body, res) => {
       requests++;
+      received.push(...parseSpans(body));
       ok(res);
     });
     try {
       const result = await run(dir, file, server.port).result;
-      expect(result.code).toBe(1);
+      expect(result.code, result.stderr).toBe(0);
       expect(result.stderr).toContain("exceeds 8388608 bytes");
-      expect(requests).toBe(0);
-      expect(await sidecar(file)).toEqual([]);
+      expect(requests).toBeGreaterThan(0);
+      expect(await sidecar(file)).toEqual(["turn-1", "turn-2", "turn-3"]);
+      expect(received.filter((s) => s.name === "Codex Turn")).toHaveLength(3);
+      expect(
+        received.filter((s) => s.attributes.some((a) => a.key.endsWith("codex.rollout.truncated"))),
+      ).toHaveLength(1);
+      const before = requests;
+      expect((await run(dir, file, server.port).result).code).toBe(0);
+      expect(requests).toBe(before);
     } finally {
       await server.close();
     }
   });
+
+  it("batches a 200-turn catch-up within the 30-second hook budget at 200 ms request latency", async () => {
+    const { dir, file } = await stage(200);
+    let requests = 0;
+    const server = await receiver(async (_body, res) => {
+      requests++;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      ok(res);
+    });
+    try {
+      const started = performance.now();
+      const result = await run(dir, file, server.port).result;
+      expect(result.code, result.stderr).toBe(0);
+      expect(requests).toBeLessThanOrEqual(26);
+      expect(performance.now() - started).toBeLessThan(15_000);
+      expect(await sidecar(file)).toHaveLength(200);
+    } finally {
+      await server.close();
+    }
+  }, 20_000);
 });
