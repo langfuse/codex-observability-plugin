@@ -65,6 +65,7 @@ The remaining options are settable both ways, as a `langfuse.json` key or as the
 - `metadata` attaches a JSON object to every trace.
 - `skill_tags` tags traces with `skill:<name>` for every skill invoked in the turn, and defaults to `true`.
 - `trace_seed` derives deterministic trace ids, so a headless caller knows a run's trace id up front. Use a unique seed per session.
+- `max_history_chars` caps the conversation history attached to each model generation, keeping the most recent messages up to this many serialized characters and replacing older ones with a single "earlier message(s) omitted" marker. It defaults to `200000`, and `0` disables the cap. Tool spans always keep their full output. Raising it or disabling it can exhaust memory on long sessions.
 - `debug` logs verbosely to stderr, and defaults to `false`.
 - `fail_on_error` fails the hook on upload errors instead of failing open, and defaults to `false`.
 

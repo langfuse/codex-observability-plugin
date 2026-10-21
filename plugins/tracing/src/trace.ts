@@ -367,21 +367,55 @@ function turnHistoryMessages(turn: Turn): ChatMlMessage[] {
   return messages;
 }
 
+const messageChars = new WeakMap<ChatMlMessage, number>();
+
+function serializedChars(message: ChatMlMessage): number {
+  let chars = messageChars.get(message);
+  if (chars === undefined) {
+    chars = JSON.stringify(message).length;
+    messageChars.set(message, chars);
+  }
+  return chars;
+}
+
+/**
+ * The conversation a generation saw, keeping only the most recent messages
+ * that fit in `maxChars` (0 = unbounded). Every generation serializes its
+ * input onto its span, so an unbounded history costs memory quadratic in the
+ * session length and can crash the hook on long sessions.
+ */
+function boundedConversation(
+  earlier: readonly ChatMlMessage[],
+  current: readonly ChatMlMessage[],
+  maxChars: number,
+): ChatMlMessage[] {
+  const all = [...earlier, ...current];
+  if (maxChars <= 0) return all;
+  let used = 0;
+  let start = all.length;
+  while (start > 0) {
+    const chars = serializedChars(all[start - 1]);
+    if (used + chars > maxChars) break;
+    used += chars;
+    start--;
+  }
+  if (start === 0) return all;
+  return [
+    {
+      role: "system",
+      content: `[${start} earlier message(s) omitted: the conversation exceeds max_history_chars (${maxChars})]`,
+    },
+    ...all.slice(start),
+  ];
+}
+
 function generationInput(
   systemMessage: string | undefined,
-  historyPrefix: ChatMlMessage[],
-  turn: Turn,
-  stepIndex: number,
+  conversation: ChatMlMessage[],
 ): ChatMlMessage[] | undefined {
   const messages: ChatMlMessage[] = [];
   if (systemMessage) messages.push({ role: "system", content: systemMessage });
-  messages.push(...historyPrefix);
-  const user = userMessage(turn);
-  if (user) messages.push(user);
-  for (let j = 0; j < stepIndex; j++) {
-    messages.push(assistantMessage(turn.steps[j]));
-    messages.push(...toolMessages(turn.steps[j]));
-  }
+  messages.push(...conversation);
   return messages.length > 0 ? messages : undefined;
 }
 
@@ -487,14 +521,21 @@ async function emitTurn(
     const systemMessage = systemPromptText(turn.systemPrompt);
     const historyPrefix = ctx.historyPrefix ?? [];
     const spawnObservations = new Map<string, LangfuseObservation>();
+    const user = userMessage(turn);
+    const turnMessages: ChatMlMessage[] = user ? [user] : [];
 
     for (let i = 0; i < turn.steps.length; i++) {
       const step = turn.steps[i];
+      const conversation = boundedConversation(
+        historyPrefix,
+        turnMessages,
+        ctx.config.max_history_chars,
+      );
       const generation = startObservation(
         isSubagent ? "LLM Subagent" : "LLM",
         {
           input: attachToolDefinitions(
-            generationInput(systemMessage, historyPrefix, turn, i),
+            generationInput(systemMessage, conversation),
             turn.toolDefinitions,
           ),
           output: buildGenerationOutput(step),
@@ -521,6 +562,7 @@ async function emitTurn(
       }
 
       generation.end(new Date(generationEnd(step)));
+      turnMessages.push(assistantMessage(step), ...toolMessages(step));
     }
 
     const announced: SubagentRollout[] = [];
