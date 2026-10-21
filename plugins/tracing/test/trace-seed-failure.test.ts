@@ -33,6 +33,7 @@ const baseConfig: Config = {
   skill_tags: true,
   debug: false,
   fail_on_error: false,
+  max_history_chars: 200_000,
   trace_seed: "ci-run-42",
 };
 

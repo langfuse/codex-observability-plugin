@@ -249,4 +249,34 @@ describe("getConfig", () => {
     });
     expect(fromEnv.fail_on_error).toBe(false);
   });
+
+  it("parses max_history_chars from config and environment, ignoring invalid values", async () => {
+    const defaults = await getConfig({ home: emptyHome(), cwd: emptyHome(), env: {} });
+    expect(defaults.max_history_chars).toBe(200_000);
+
+    const home = makeTmpHome({
+      rel: ".codex/langfuse.json",
+      contents: { public_key: "pk-lf-kept", max_history_chars: 5000 },
+    });
+    const fromFile = await getConfig({ home, cwd: emptyHome(), env: {} });
+    expect(fromFile.max_history_chars).toBe(5000);
+
+    const fromEnv = await getConfig({
+      home,
+      cwd: emptyHome(),
+      env: { LANGFUSE_CODEX_MAX_HISTORY_CHARS: "0" },
+    });
+    expect(fromEnv.max_history_chars).toBe(0);
+
+    const invalid = await getConfig({
+      home: makeTmpHome({
+        rel: ".codex/langfuse.json",
+        contents: { public_key: "pk-lf-kept", max_history_chars: -1 },
+      }),
+      cwd: emptyHome(),
+      env: { LANGFUSE_CODEX_MAX_HISTORY_CHARS: "lots" },
+    });
+    expect(invalid.max_history_chars).toBe(200_000);
+    expect(invalid.public_key).toBe("pk-lf-kept");
+  });
 });

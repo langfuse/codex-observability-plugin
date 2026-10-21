@@ -367,9 +367,68 @@ function turnHistoryMessages(turn: Turn): ChatMlMessage[] {
   return messages;
 }
 
+function messageChars(message: ChatMlMessage): number {
+  let n = 0;
+  if (typeof message.content === "string") {
+    n += message.content.length;
+  } else if (Array.isArray(message.content)) {
+    for (const part of message.content) {
+      n += part.type === "text" ? part.text.length : part.image_url.url.length;
+    }
+  }
+  if (message.role === "assistant") {
+    for (const part of message.thinking ?? []) n += part.content.length;
+    for (const tc of message.tool_calls ?? []) {
+      n += tc.function.name.length + (tc.function.arguments?.length ?? 0);
+    }
+  }
+  return n;
+}
+
+type History = { messages: ChatMlMessage[]; omitted: number };
+
+/**
+ * The messages of the turns before `turnIndex`, newest first until `budget`
+ * characters are used, with a marker standing in for everything older. Every
+ * generation's input is serialized onto its own span, so an unbounded history
+ * grows memory with steps × session size and long sessions exhaust the heap.
+ */
+function boundedHistory(
+  turnMessages: readonly ChatMlMessage[][],
+  turnIndex: number,
+  budget: number,
+): History {
+  const kept: ChatMlMessage[] = [];
+  let total = 0;
+  let used = 0;
+  let full = false;
+  for (let t = turnIndex - 1; t >= 0; t--) {
+    const messages = turnMessages[t];
+    total += messages.length;
+    for (let m = messages.length - 1; m >= 0 && !full; m--) {
+      const size = messageChars(messages[m]);
+      if (used + size > budget) {
+        full = true;
+      } else {
+        used += size;
+        kept.push(messages[m]);
+      }
+    }
+  }
+  const omitted = total - kept.length;
+  kept.reverse();
+  if (omitted > 0) {
+    kept.unshift({
+      role: "system",
+      content: `[${omitted} earlier message(s) omitted from this trace to stay within max_history_chars]`,
+    });
+  }
+  return { messages: kept, omitted };
+}
+
 function generationInput(
   systemMessage: string | undefined,
-  historyPrefix: ChatMlMessage[],
+  historyPrefix: readonly ChatMlMessage[],
   turn: Turn,
   stepIndex: number,
 ): ChatMlMessage[] | undefined {
@@ -434,7 +493,7 @@ async function emitTurn(
     seenThreadIds: Set<string>;
     unannouncedSubagents?: SubagentRollout[];
     inheritableTurnIds?: ReadonlySet<string>;
-    historyPrefix?: ChatMlMessage[];
+    history?: History;
   },
 ): Promise<void> {
   const isSubagent = sessionMeta.isSubagentThread === true || ctx.parentObservation != null;
@@ -485,7 +544,8 @@ async function emitTurn(
   let failure: unknown;
   try {
     const systemMessage = systemPromptText(turn.systemPrompt);
-    const historyPrefix = ctx.historyPrefix ?? [];
+    const historyPrefix = ctx.history?.messages ?? [];
+    const omittedHistory = ctx.history?.omitted ?? 0;
     const spawnObservations = new Map<string, LangfuseObservation>();
 
     for (let i = 0; i < turn.steps.length; i++) {
@@ -506,6 +566,7 @@ async function emitTurn(
           metadata: {
             "codex.step_index": i,
             "codex.reasoning_effort": turn.reasoningEffort,
+            ...(omittedHistory > 0 ? { "codex.history_omitted_messages": omittedHistory } : {}),
           },
         },
         {
@@ -643,14 +704,9 @@ export async function convertRollout(
 ): Promise<string[]> {
   const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
 
-  const historyPrefixes: ChatMlMessage[][] = [];
-  {
-    const seen: ChatMlMessage[] = [];
-    for (const turn of turns) {
-      historyPrefixes.push([...seen]);
-      seen.push(...turnHistoryMessages(turn));
-    }
-  }
+  const turnMessages = turns.map(turnHistoryMessages);
+  const historyFor = (turnIndex: number): History =>
+    boundedHistory(turnMessages, turnIndex, options.config.max_history_chars);
   debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 
   const subagentIndex =
@@ -716,7 +772,7 @@ export async function convertRollout(
         seenThreadIds,
         unannouncedSubagents: subagentsFor(turnIndex),
         inheritableTurnIds,
-        historyPrefix: historyPrefixes[turnIndex],
+        history: historyFor(turnIndex),
       });
     }
     return [];
@@ -753,7 +809,7 @@ export async function convertRollout(
         seenThreadIds,
         unannouncedSubagents: subagentsFor(turnIndex),
         inheritableTurnIds,
-        historyPrefix: historyPrefixes[turnIndex],
+        history: historyFor(turnIndex),
       });
 
     if (attached) {
