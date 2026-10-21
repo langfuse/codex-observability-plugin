@@ -51,14 +51,23 @@ export async function runHook(): Promise<void> {
   }
 
   const instrumentation = setupInstrumentation(config);
-  let exportedTurnIds: string[] = [];
+  const transcriptPath = hookInput.transcript_path;
   let failure: unknown;
 
   try {
-    exportedTurnIds = await convertRollout(hookInput.transcript_path, {
+    await convertRollout(transcriptPath, {
       config,
       parentSpanContext,
       stoppedTurnId: hookInput.turn_id ?? undefined,
+      // Flush and record each turn before converting the next: a backlog is
+      // delivered incrementally instead of all-or-nothing, and only one turn's
+      // spans are held in memory at a time. Record delivery only after the
+      // flush: a turn marked despite a failed export is lost silently, while
+      // an unmarked one is retried.
+      onTurnExported: async (turnId) => {
+        await instrumentation.flush();
+        await markTurnUploaded(transcriptPath, turnId);
+      },
     });
   } catch (error) {
     failure = error;
@@ -72,16 +81,9 @@ export async function runHook(): Promise<void> {
     debugLog("error during flush/shutdown:", error);
   }
 
-  // Record delivery only after the flush: a turn marked despite a failed export
-  // is lost silently, while an unmarked one is retried.
   if (failure) {
     if (config.fail_on_error) throw failure;
-    debugLog("export incomplete; leaving turns unmarked so they stay retryable");
-    return;
-  }
-
-  for (const turnId of exportedTurnIds) {
-    await markTurnUploaded(hookInput.transcript_path, turnId);
+    debugLog("export incomplete; leaving the remaining turns unmarked so they stay retryable");
   }
 }
 

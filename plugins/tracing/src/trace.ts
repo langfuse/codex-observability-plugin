@@ -681,6 +681,8 @@ export async function convertRollout(
     seenThreadIds?: Set<string>;
     ancestorTurnIds?: ReadonlySet<string>;
     stoppedTurnId?: string;
+    /** Awaited after each exported turn, before the next one is converted. */
+    onTurnExported?: (turnId: string) => Promise<void>;
   },
 ): Promise<string[]> {
   const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
@@ -816,6 +818,7 @@ export async function convertRollout(
 
     uploaded.add(turn.turnId);
     exportedTurnIds.push(turn.turnId);
+    await options.onTurnExported?.(turn.turnId);
   }
 
   return exportedTurnIds;
