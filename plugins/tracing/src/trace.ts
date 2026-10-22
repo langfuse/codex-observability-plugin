@@ -31,6 +31,8 @@ import type {
 } from "./types.js";
 import { debugLog, toText } from "./utils.js";
 
+const MAX_REPEATED_INPUT_BYTES = 64 * 1024 * 1024;
+
 async function loadSession(file: string): Promise<RolloutLine[]> {
   const lines: RolloutLine[] = [];
   const input = createReadStream(file, { encoding: "utf-8" });
@@ -38,7 +40,8 @@ async function loadSession(file: string): Promise<RolloutLine[]> {
     const trimmed = raw.trim();
     if (!trimmed) continue;
     try {
-      lines.push(JSON.parse(trimmed) as RolloutLine);
+      const line = JSON.parse(trimmed) as RolloutLine;
+      if (line.type !== "compacted") lines.push(line);
     } catch {
       // skip malformed lines rather than aborting the whole upload
     }
@@ -435,6 +438,7 @@ async function emitTurn(
     unannouncedSubagents?: SubagentRollout[];
     inheritableTurnIds?: ReadonlySet<string>;
     historyPrefix?: ChatMlMessage[];
+    omitRepeatedInput: boolean;
   },
 ): Promise<void> {
   const isSubagent = sessionMeta.isSubagentThread === true || ctx.parentObservation != null;
@@ -493,10 +497,18 @@ async function emitTurn(
       const generation = startObservation(
         isSubagent ? "LLM Subagent" : "LLM",
         {
-          input: attachToolDefinitions(
-            generationInput(systemMessage, historyPrefix, turn, i),
-            turn.toolDefinitions,
-          ),
+          input: ctx.omitRepeatedInput
+            ? [
+                {
+                  role: "system",
+                  content:
+                    "[Generation input omitted from trace: estimated repeated context exceeds 64 MB]",
+                },
+              ]
+            : attachToolDefinitions(
+                generationInput(systemMessage, historyPrefix, turn, i),
+                turn.toolDefinitions,
+              ),
           output: buildGenerationOutput(step),
           model: turn.model,
           ...(turn.reasoningEffort
@@ -641,10 +653,15 @@ export async function convertRollout(
     stoppedTurnId?: string;
   },
 ): Promise<string[]> {
+  const rolloutBytes = (await fs.stat(rolloutFile)).size;
   const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
+  // ponytail: file size overestimates prompt size; count parsed message bytes if this hides prompts too often.
+  const omitRepeatedInput =
+    rolloutBytes * turns.reduce((total, turn) => total + turn.steps.length, 0) >
+    MAX_REPEATED_INPUT_BYTES;
 
   const historyPrefixes: ChatMlMessage[][] = [];
-  {
+  if (!omitRepeatedInput) {
     const seen: ChatMlMessage[] = [];
     for (const turn of turns) {
       historyPrefixes.push([...seen]);
@@ -717,6 +734,7 @@ export async function convertRollout(
         unannouncedSubagents: subagentsFor(turnIndex),
         inheritableTurnIds,
         historyPrefix: historyPrefixes[turnIndex],
+        omitRepeatedInput,
       });
     }
     return [];
@@ -754,6 +772,7 @@ export async function convertRollout(
         unannouncedSubagents: subagentsFor(turnIndex),
         inheritableTurnIds,
         historyPrefix: historyPrefixes[turnIndex],
+        omitRepeatedInput,
       });
 
     if (attached) {
