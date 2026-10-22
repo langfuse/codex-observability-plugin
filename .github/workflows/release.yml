@@ -16,6 +16,7 @@ concurrency:
 jobs:
   release:
     name: Stage npm package and create GitHub release
+    environment: protected branches
     runs-on: ubuntu-latest
     permissions:
       contents: write
