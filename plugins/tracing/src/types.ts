@@ -185,6 +185,7 @@ export type SystemPrompt = {
   developerMessages: string[];
   injectedContext: string[];
   changed: boolean;
+  truncated?: boolean;
 };
 
 export type ToolCall = {
@@ -226,4 +227,6 @@ export type Turn = {
   systemPrompt?: SystemPrompt;
   userImages: string[];
   toolDefinitions: ToolDefinition[];
+  /** Some transcript data was omitted to stay within the memory budget. */
+  truncated?: boolean;
 };

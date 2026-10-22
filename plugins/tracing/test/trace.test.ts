@@ -15,7 +15,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { Config } from "../src/config.js";
 import { markTurnUploaded } from "../src/sidecar.js";
-import { buildSubagentIndex, convertRollout } from "../src/trace.js";
+import { buildSubagentIndex, convertRollout, MAX_GENERATION_INPUT_BYTES } from "../src/trace.js";
+import { ROLLOUT_LIMITS } from "../src/rollout.js";
 
 const exporter = new InMemorySpanExporter();
 let provider: NodeTracerProvider;
@@ -86,6 +87,56 @@ beforeEach(() => {
 });
 
 describe("convertRollout", () => {
+  it("continues exporting and labels routing degradation when the bounded index fills", async () => {
+    const limit = ROLLOUT_LIMITS.turns;
+    ROLLOUT_LIMITS.turns = 1;
+    try {
+      const dir = stageFixtures();
+      expect(
+        await convertRollout(path.join(dir, "rollout-two-turns-main.jsonl"), {
+          config: baseConfig,
+        }),
+      ).toEqual(["turn-a", "turn-b"]);
+      expect(turnRoots()).toHaveLength(2);
+      for (const root of turnRoots())
+        expect(attr(root, "langfuse.observation.metadata.codex.routing.truncated")).toBe("true");
+    } finally {
+      ROLLOUT_LIMITS.turns = limit;
+    }
+  });
+
+  it("bounds huge UTF-8/escaped prompts without losing the current user or system messages", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-two-turns-main.jsonl");
+    const records = fs
+      .readFileSync(file, "utf8")
+      .trim()
+      .split("\n")
+      .map((raw) => JSON.parse(raw));
+    records[0].payload.base_instructions = { text: "system-prefix " + "界\\\n".repeat(100_000) };
+    records.find((record) => record.payload.type === "user_message").payload.message =
+      "current-user " + "界\\\n".repeat(100_000);
+    fs.writeFileSync(file, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+    await convertRollout(file, { config: baseConfig });
+    const generations = exporter
+      .getFinishedSpans()
+      .filter((span) => obsType(span) === "generation");
+    expect(generations).toHaveLength(2);
+    const inputs = generations.map((span) => attr(span, "langfuse.observation.input"));
+    for (const input of inputs) {
+      expect(Buffer.byteLength(input)).toBeLessThanOrEqual(MAX_GENERATION_INPUT_BYTES);
+      expect(JSON.parse(input).some((message: { role: string }) => message.role === "system")).toBe(
+        true,
+      );
+      expect(JSON.parse(input).some((message: { role: string }) => message.role === "user")).toBe(
+        true,
+      );
+      expect(input).toContain("system-prefix");
+    }
+    expect(inputs[0]).toContain("current-user");
+    expect(inputs[1]).toContain("And 2 + 2?");
+  });
+
   it("emits an agent → generation → tool tree with backdated timestamps", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), { config: baseConfig });

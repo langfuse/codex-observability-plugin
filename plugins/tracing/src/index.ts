@@ -51,14 +51,15 @@ export async function runHook(): Promise<void> {
   }
 
   const instrumentation = setupInstrumentation(config);
-  let exportedTurnIds: string[] = [];
   let failure: unknown;
 
   try {
-    exportedTurnIds = await convertRollout(hookInput.transcript_path, {
+    await convertRollout(hookInput.transcript_path, {
       config,
       parentSpanContext,
       stoppedTurnId: hookInput.turn_id ?? undefined,
+      flush: instrumentation.flush,
+      onTurnExported: (turnId) => markTurnUploaded(hookInput.transcript_path!, turnId),
     });
   } catch (error) {
     failure = error;
@@ -72,16 +73,11 @@ export async function runHook(): Promise<void> {
     debugLog("error during flush/shutdown:", error);
   }
 
-  // Record delivery only after the flush: a turn marked despite a failed export
-  // is lost silently, while an unmarked one is retried.
+  // Earlier checkpoints remain delivered; failed and unfinished turns retry.
   if (failure) {
     if (config.fail_on_error) throw failure;
     debugLog("export incomplete; leaving turns unmarked so they stay retryable");
     return;
-  }
-
-  for (const turnId of exportedTurnIds) {
-    await markTurnUploaded(hookInput.transcript_path, turnId);
   }
 }
 

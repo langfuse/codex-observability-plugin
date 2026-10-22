@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { getLangfuseTracerProvider, setLangfuseTracerProvider } from "@langfuse/tracing";
-import type { ReadableSpan, SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan, SpanProcessor, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Config } from "../src/config.js";
@@ -17,11 +17,20 @@ const captured: ReadableSpan[] = [];
 
 vi.mock("@langfuse/otel", () => ({
   LangfuseSpanProcessor: class implements SpanProcessor {
+    constructor(private params: { exporter: SpanExporter }) {}
     onStart(): void {}
     onEnd(span: ReadableSpan): void {
       captured.push(span);
+      this.params.exporter.export([span], () => {});
     }
     async forceFlush(): Promise<void> {}
+    async shutdown(): Promise<void> {}
+  },
+}));
+
+vi.mock("@opentelemetry/exporter-trace-otlp-http", () => ({
+  OTLPTraceExporter: class {
+    export: SpanExporter["export"] = (_spans, callback) => callback({ code: 0 });
     async shutdown(): Promise<void> {}
   },
 }));

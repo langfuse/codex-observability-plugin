@@ -1,7 +1,6 @@
-import { createReadStream, type Dirent } from "node:fs";
+import { type Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { createInterface } from "node:readline";
 
 import {
   createTraceId,
@@ -14,8 +13,10 @@ import {
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
-import { currentIdSeed, seedIds } from "./instrumentation.js";
-import { parseArgs, parseSession } from "./parse.js";
+import { ExportBatch } from "./export-batch.js";
+import { currentIdSeed, seedIds, type ExportReceipt } from "./instrumentation.js";
+import { parseArgs } from "./parse.js";
+import { readRollout, readRolloutMeta, readTurns, ROLLOUT_LIMITS } from "./rollout.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
 import { skillsForToolCall, traceTags } from "./skills.js";
 import type {
@@ -31,20 +32,7 @@ import type {
 } from "./types.js";
 import { debugLog, toText } from "./utils.js";
 
-async function loadSession(file: string): Promise<RolloutLine[]> {
-  const lines: RolloutLine[] = [];
-  const input = createReadStream(file, { encoding: "utf-8" });
-  for await (const raw of createInterface({ input, crlfDelay: Infinity })) {
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-    try {
-      lines.push(JSON.parse(trimmed) as RolloutLine);
-    } catch {
-      // skip malformed lines rather than aborting the whole upload
-    }
-  }
-  return lines;
-}
+const MAX_ROUTING_BYTES = 8 * 1024 * 1024;
 
 type SubagentRollout = {
   threadId: string;
@@ -57,6 +45,7 @@ type SubagentRollout = {
 export type SubagentIndex = {
   byParent: Map<string, SubagentRollout[]>;
   byThread: Map<string, SubagentRollout>;
+  truncated?: boolean;
 };
 
 async function readSessionMeta(
@@ -104,6 +93,7 @@ export async function buildSubagentIndex(
   const fromDay = path.relative(root, path.dirname(rolloutFile));
   const bounded = !options.includeEarlierDays && /^\d{4}\/\d{2}\/\d{2}$/.test(fromDay);
   const index: SubagentIndex = { byParent: new Map(), byThread: new Map() };
+  let indexBytes = 0;
 
   async function walk(dir: string, rel: string): Promise<void> {
     if (bounded && rel && rel < fromDay.slice(0, rel.length)) return;
@@ -130,6 +120,12 @@ export async function buildSubagentIndex(
         startTime: meta.startTime,
         nickname: meta.nickname,
       };
+      const bytes = Buffer.byteLength(JSON.stringify(rollout));
+      if (indexBytes + bytes > MAX_ROUTING_BYTES) {
+        index.truncated = true;
+        continue;
+      }
+      indexBytes += bytes;
       index.byThread.set(meta.threadId, rollout);
       if (!meta.parentThreadId) continue;
       index.byParent.set(meta.parentThreadId, [
@@ -143,18 +139,31 @@ export async function buildSubagentIndex(
   return index;
 }
 
-function turnIndexByNickname(turns: Turn[]): Map<string, number> {
-  const byNickname = new Map<string, number>();
-  const ambiguous = new Set<string>();
-  turns.forEach((turn, index) => {
-    for (const tc of turn.steps.flatMap((s) => s.toolCalls)) {
+type TurnSummary = Pick<Turn, "turnId" | "startTime" | "endTime" | "subagentThreadIds"> & {
+  nicknames: string[];
+};
+
+function spawnNicknames(turn: Turn): string[] {
+  const names: string[] = [];
+  for (const step of turn.steps) {
+    for (const tc of step.toolCalls) {
       if (tc.name !== "spawn_agent" || tc.output == null) continue;
       const out = parseArgs(toText(tc.output));
       const nickname =
         out !== null && typeof out === "object"
           ? (out as { nickname?: unknown }).nickname
           : undefined;
-      if (typeof nickname !== "string" || !nickname) continue;
+      if (typeof nickname === "string" && nickname) names.push(nickname);
+    }
+  }
+  return names;
+}
+
+function turnIndexByNickname(turns: TurnSummary[]): Map<string, number> {
+  const byNickname = new Map<string, number>();
+  const ambiguous = new Set<string>();
+  turns.forEach((turn, index) => {
+    for (const nickname of turn.nicknames) {
       if (byNickname.has(nickname) && byNickname.get(nickname) !== index) {
         ambiguous.add(nickname);
       }
@@ -165,7 +174,7 @@ function turnIndexByNickname(turns: Turn[]): Map<string, number> {
   return byNickname;
 }
 
-function turnIndexAt(turns: Turn[], startTime: number): number {
+function turnIndexAt(turns: TurnSummary[], startTime: number): number {
   const running = turns.findIndex((t) => startTime >= t.startTime && startTime <= t.endTime);
   if (running !== -1) return running;
   let last = 0;
@@ -306,6 +315,7 @@ function systemPromptMetadata(systemPrompt: SystemPrompt): Record<string, unknow
     "codex.system_prompt.injected_context_chars": injectedChars,
     "codex.system_prompt.injected_context_count": systemPrompt.injectedContext.length,
     "codex.system_prompt.changed_this_turn": systemPrompt.changed,
+    ...(systemPrompt.truncated ? { "codex.system_prompt.truncated": true } : {}),
   };
 }
 
@@ -367,22 +377,97 @@ function turnHistoryMessages(turn: Turn): ChatMlMessage[] {
   return messages;
 }
 
-function generationInput(
-  systemMessage: string | undefined,
-  historyPrefix: ChatMlMessage[],
-  turn: Turn,
-  stepIndex: number,
-): ChatMlMessage[] | undefined {
-  const messages: ChatMlMessage[] = [];
-  if (systemMessage) messages.push({ role: "system", content: systemMessage });
-  messages.push(...historyPrefix);
-  const user = userMessage(turn);
-  if (user) messages.push(user);
-  for (let j = 0; j < stepIndex; j++) {
-    messages.push(assistantMessage(turn.steps[j]));
-    messages.push(...toolMessages(turn.steps[j]));
+export const MAX_GENERATION_INPUT_BYTES = 256 * 1024;
+type HistoryGroup = { messages: ChatMlMessage[]; bytes: number };
+
+const messageBytes = (messages: ChatMlMessage[]) =>
+  messages.reduce((bytes, message) => bytes + Buffer.byteLength(JSON.stringify(message)) + 1, 0);
+
+/** Evict whole turns/steps so a retained tool result keeps its assistant call. */
+class GenerationHistory {
+  private groups: HistoryGroup[] = [];
+  private bytes = 0;
+  truncated = false;
+
+  append(messages: ChatMlMessage[]): void {
+    const bytes = messageBytes(messages);
+    if (!messages.length) return;
+    if (bytes > MAX_GENERATION_INPUT_BYTES - 2) {
+      // One oversized group cannot fit, but later small groups still can.
+      this.truncated = true;
+      return;
+    }
+    this.groups.push({ messages, bytes });
+    this.bytes += bytes;
+    while (this.bytes > MAX_GENERATION_INPUT_BYTES - 2) {
+      this.bytes -= this.groups.shift()!.bytes;
+      this.truncated = true;
+    }
   }
-  return messages.length > 0 ? messages : undefined;
+
+  recent(budget: number): { messages: ChatMlMessage[]; bytes: number; truncated: boolean } {
+    let bytes = 0;
+    let first = this.groups.length;
+    while (first > 0 && bytes + this.groups[first - 1].bytes <= budget) {
+      bytes += this.groups[--first].bytes;
+    }
+    return {
+      messages: this.groups.slice(first).flatMap((group) => group.messages),
+      bytes,
+      truncated: this.truncated || first > 0,
+    };
+  }
+}
+
+function generationInput(
+  system: string | undefined,
+  user: ChatMlMessage | undefined,
+  prefix: GenerationHistory | undefined,
+  steps: GenerationHistory,
+  definitions: ToolDefinition[],
+): { input: unknown; truncated: boolean } {
+  let pinned: ChatMlMessage[] = [
+    ...(system ? [{ role: "system" as const, content: system }] : []),
+    ...(user ? [user] : []),
+  ];
+  let truncated = false;
+  // Reserve room for recent history even when a single prompt is enormous.
+  if (messageBytes(pinned) > MAX_GENERATION_INPUT_BYTES / 2) {
+    pinned = pinned.map((message) => {
+      if (messageBytes([message]) <= MAX_GENERATION_INPUT_BYTES / 4) return message;
+      let text = "content" in message ? toText(message.content) : toText(message);
+      let bounded: ChatMlMessage;
+      do {
+        text = text.slice(0, Math.floor(text.length / 2));
+        bounded = {
+          role: message.role === "system" ? "system" : "user",
+          content: `${text}\n[Input truncated; see turn span.]`,
+        };
+      } while (messageBytes([bounded]) > MAX_GENERATION_INPUT_BYTES / 4);
+      return bounded;
+    });
+    truncated = true;
+  }
+  let tools = definitions;
+  let toolsBytes = tools.length ? Buffer.byteLength(JSON.stringify(tools)) + 10 : 0;
+  if (toolsBytes > MAX_GENERATION_INPUT_BYTES / 4) {
+    tools = [];
+    toolsBytes = 0;
+    truncated = true;
+  }
+  const budget = MAX_GENERATION_INPUT_BYTES - messageBytes(pinned) - toolsBytes - 2;
+  const current = steps.recent(budget);
+  const previous = prefix?.recent(budget - current.bytes);
+  const messages = [
+    ...pinned.filter((message) => message.role === "system"),
+    ...(previous?.messages ?? []),
+    ...pinned.filter((message) => message.role === "user"),
+    ...current.messages,
+  ];
+  return {
+    input: attachToolDefinitions(messages.length ? messages : undefined, tools),
+    truncated: truncated || current.truncated || previous?.truncated === true,
+  };
 }
 
 type ContentPart =
@@ -434,9 +519,13 @@ async function emitTurn(
     seenThreadIds: Set<string>;
     unannouncedSubagents?: SubagentRollout[];
     inheritableTurnIds?: ReadonlySet<string>;
-    historyPrefix?: ChatMlMessage[];
+    historyPrefix?: GenerationHistory;
+    batch: ExportBatch;
+    spanIds: Set<string>;
+    routingTruncated?: boolean;
+    depth?: number;
   },
-): Promise<void> {
+): Promise<boolean> {
   const isSubagent = sessionMeta.isSubagentThread === true || ctx.parentObservation != null;
 
   const outerSeed = currentIdSeed();
@@ -458,6 +547,10 @@ async function emitTurn(
         "codex.cli_version": sessionMeta.cliVersion,
         "codex.aborted": turn.aborted,
         "codex.tool_call_count": turn.steps.reduce((n, s) => n + s.toolCalls.length, 0),
+        ...(turn.truncated ? { "codex.rollout.truncated": true } : {}),
+        ...(ctx.routingTruncated || ctx.subagentIndex.truncated
+          ? { "codex.routing.truncated": true }
+          : {}),
         ...(ctx.attached && ctx.parentSpanContext
           ? {
               "codex.parent_trace_id": ctx.parentSpanContext.traceId,
@@ -485,18 +578,23 @@ async function emitTurn(
   let failure: unknown;
   try {
     const systemMessage = systemPromptText(turn.systemPrompt);
-    const historyPrefix = ctx.historyPrefix ?? [];
+    const history = new GenerationHistory();
+    const user = userMessage(turn);
     const spawnObservations = new Map<string, LangfuseObservation>();
 
     for (let i = 0; i < turn.steps.length; i++) {
       const step = turn.steps[i];
+      const input = generationInput(
+        systemMessage,
+        user,
+        ctx.historyPrefix,
+        history,
+        turn.toolDefinitions,
+      );
       const generation = startObservation(
         isSubagent ? "LLM Subagent" : "LLM",
         {
-          input: attachToolDefinitions(
-            generationInput(systemMessage, historyPrefix, turn, i),
-            turn.toolDefinitions,
-          ),
+          input: input.input,
           output: buildGenerationOutput(step),
           model: turn.model,
           ...(turn.reasoningEffort
@@ -505,6 +603,7 @@ async function emitTurn(
           usageDetails: toUsageDetails(step.usage),
           metadata: {
             "codex.step_index": i,
+            ...(input.truncated ? { "codex.generation_input.truncated": true } : {}),
             "codex.reasoning_effort": turn.reasoningEffort,
           },
         },
@@ -518,9 +617,12 @@ async function emitTurn(
       for (const tc of step.toolCalls) {
         const observation = emitToolCall(tc, root, step.endTime);
         if (tc.name === "spawn_agent") spawnObservations.set(tc.callId, observation);
+        await ctx.batch.ended(observation, ctx.spanIds);
       }
 
       generation.end(new Date(generationEnd(step)));
+      await ctx.batch.ended(generation, ctx.spanIds);
+      history.append([assistantMessage(step), ...toolMessages(step)]);
     }
 
     const announced: SubagentRollout[] = [];
@@ -542,6 +644,9 @@ async function emitTurn(
         subagentIndex: ctx.subagentIndex,
         seenThreadIds: ctx.seenThreadIds,
         ancestorTurnIds: ctx.inheritableTurnIds,
+        batch: ctx.batch,
+        spanIds: ctx.spanIds,
+        depth: (ctx.depth ?? 0) + 1,
       });
       seedIds(seedBeforeChild);
     }
@@ -557,8 +662,13 @@ async function emitTurn(
   }
 
   root.end(new Date(turn.endTime));
-  seedIds(outerSeed);
+  try {
+    await ctx.batch.ended(root, ctx.spanIds);
+  } finally {
+    seedIds(outerSeed);
+  }
   if (failure && ctx.config.fail_on_error) throw failure;
+  return failure === undefined;
 }
 
 function emitToolCall(
@@ -596,7 +706,7 @@ function isFinal(
 
 async function readTurnIds(file: string): Promise<Set<string>> {
   const ids = new Set<string>();
-  for (const line of await loadSession(file)) {
+  for await (const { line } of readRollout(file, (await fs.stat(file)).size)) {
     if (line.type !== "event_msg") continue;
     const p = line.payload as EventMsgPayload;
     if (p.type === "task_started" && typeof p.turn_id === "string") ids.add(p.turn_id);
@@ -639,19 +749,42 @@ export async function convertRollout(
     seenThreadIds?: Set<string>;
     ancestorTurnIds?: ReadonlySet<string>;
     stoppedTurnId?: string;
+    flush?: () => Promise<ExportReceipt | void>;
+    onTurnExported?: (turnId: string) => Promise<void>;
+    depth?: number;
+    batch?: ExportBatch;
+    spanIds?: Set<string>;
   },
 ): Promise<string[]> {
-  const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
-
-  const historyPrefixes: ChatMlMessage[][] = [];
-  {
-    const seen: ChatMlMessage[] = [];
-    for (const turn of turns) {
-      historyPrefixes.push([...seen]);
-      seen.push(...turnHistoryMessages(turn));
+  if ((options.depth ?? 0) > 16) throw new Error("Subagent nesting exceeds memory limit");
+  const size = (await fs.stat(rolloutFile)).size;
+  const sessionMeta = await readRolloutMeta(rolloutFile, size);
+  // The first pass keeps only routing metadata. A later spawn announcement can
+  // disambiguate an earlier child, so routing must be resolved before emission.
+  const turns: TurnSummary[] = [];
+  let routingBytes = 0;
+  let totalTurns = 0;
+  let routingTruncated = false;
+  for await (const turn of readTurns(rolloutFile, size, sessionMeta)) {
+    totalTurns++;
+    if (routingTruncated) continue;
+    const summary = {
+      turnId: turn.turnId,
+      startTime: turn.startTime,
+      endTime: turn.endTime,
+      subagentThreadIds: turn.subagentThreadIds,
+      nicknames: spawnNicknames(turn),
+    };
+    const bytes = Buffer.byteLength(JSON.stringify(summary));
+    if (turns.length >= ROLLOUT_LIMITS.turns || routingBytes + bytes > MAX_ROUTING_BYTES) {
+      routingTruncated = true;
+      continue;
     }
+    routingBytes += bytes;
+    turns.push(summary);
   }
-  debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
+  const history = new GenerationHistory();
+  debugLog(`indexed ${turns.length} of ${totalTurns} turn(s) from ${path.basename(rolloutFile)}`);
 
   const subagentIndex =
     options.subagentIndex ??
@@ -663,7 +796,10 @@ export async function convertRollout(
 
   const announced = new Set(turns.flatMap((t) => t.subagentThreadIds));
   const unannounced = (subagentIndex.byParent.get(sessionMeta.sessionId) ?? []).filter(
-    (s) => !announced.has(s.threadId) && !seenThreadIds.has(s.threadId),
+    (s) =>
+      !announced.has(s.threadId) &&
+      !seenThreadIds.has(s.threadId) &&
+      (!routingTruncated || s.startTime <= (turns.at(-1)?.endTime ?? 0)),
   );
   const spawnTurnOf =
     unannounced.length > 0 ? turnIndexByNickname(turns) : new Map<string, number>();
@@ -704,77 +840,103 @@ export async function convertRollout(
     if (turn.turnId) inheritableTurnIds.add(turn.turnId);
   }
 
-  if (options.parentObservation) {
-    for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
-      const turn = turns[turnIndex];
-      if (skipInherited(turn, turnIndex)) continue;
-      await emitTurn(turn, sessionMeta, {
-        config: options.config,
-        rolloutFile,
-        parentObservation: options.parentObservation,
-        subagentIndex,
-        seenThreadIds,
-        unannouncedSubagents: subagentsFor(turnIndex),
-        inheritableTurnIds,
-        historyPrefix: historyPrefixes[turnIndex],
-      });
-    }
-    return [];
-  }
-
   const uploaded = await loadUploadedTurnIds(rolloutFile);
   const exportedTurnIds: string[] = [];
   const attached = options.parentSpanContext != null;
+  const batch = options.batch ?? new ExportBatch(options.flush);
 
-  for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
-    const turn = turns[turnIndex];
+  let turnIndex = -1;
+  for await (const turn of readTurns(rolloutFile, size, sessionMeta)) {
+    turnIndex++;
+    try {
+      if (skipInherited(turn, turnIndex)) continue;
 
-    if (skipInherited(turn, turnIndex)) continue;
+      if (options.parentObservation) {
+        const success = await emitTurn(turn, sessionMeta, {
+          config: options.config,
+          rolloutFile,
+          parentObservation: options.parentObservation,
+          subagentIndex,
+          seenThreadIds,
+          unannouncedSubagents: subagentsFor(turnIndex),
+          inheritableTurnIds,
+          historyPrefix: history,
+          batch,
+          spanIds: options.spanIds ?? new Set(),
+          routingTruncated,
+          depth: options.depth,
+        });
+        if (!success) throw new Error(`Subagent turn ${turn.turnId ?? "(no turn id)"} failed`);
+        continue;
+      }
 
-    if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
-      debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
-      continue;
-    }
-    if (uploaded.has(turn.turnId)) {
-      continue;
-    }
+      if (!isFinal(turn, options.stoppedTurnId, turnIndex < totalTurns - 1)) {
+        debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
+        continue;
+      }
+      if (uploaded.has(turn.turnId)) {
+        continue;
+      }
 
-    const parentSpanContext =
-      options.parentSpanContext ??
-      (await seededTraceParent(options.config, sessionMeta, turnIndex + 1));
+      const parentSpanContext =
+        options.parentSpanContext ??
+        (await seededTraceParent(options.config, sessionMeta, turnIndex + 1));
+      const spanIds = new Set<string>();
 
-    const emit = () =>
-      emitTurn(turn, sessionMeta, {
-        config: options.config,
-        rolloutFile,
-        parentSpanContext,
-        attached,
-        subagentIndex,
-        seenThreadIds,
-        unannouncedSubagents: subagentsFor(turnIndex),
-        inheritableTurnIds,
-        historyPrefix: historyPrefixes[turnIndex],
-      });
+      const emit = () =>
+        emitTurn(turn, sessionMeta, {
+          config: options.config,
+          rolloutFile,
+          parentSpanContext,
+          attached,
+          subagentIndex,
+          seenThreadIds,
+          unannouncedSubagents: subagentsFor(turnIndex),
+          inheritableTurnIds,
+          historyPrefix: history,
+          batch,
+          spanIds,
+          routingTruncated,
+          depth: options.depth,
+        });
 
-    if (attached) {
-      await emit();
-    } else {
-      const tags = traceTags(options.config, turn);
-      await propagateAttributes(
-        {
-          sessionId: sessionMeta.sessionId,
-          traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
-          ...(options.config.user_id ? { userId: options.config.user_id } : {}),
-          ...(tags.length > 0 ? { tags } : {}),
-          ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
+      let success: boolean;
+      if (attached) {
+        success = await emit();
+      } else {
+        const tags = traceTags(options.config, turn);
+        success = await propagateAttributes(
+          {
+            sessionId: sessionMeta.sessionId,
+            traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
+            ...(options.config.user_id ? { userId: options.config.user_id } : {}),
+            ...(tags.length > 0 ? { tags } : {}),
+            ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
+          },
+          emit,
+        );
+      }
+
+      batch.complete({
+        id: turn.turnId,
+        spanIds,
+        success,
+        checkpoint: async (id) => {
+          await options.onTurnExported?.(id);
+          uploaded.add(id);
+          exportedTurnIds.push(id);
         },
-        emit,
-      );
+      });
+    } finally {
+      history.append(turnHistoryMessages(turn));
     }
-
-    uploaded.add(turn.turnId);
-    exportedTurnIds.push(turn.turnId);
   }
 
+  if (!options.batch) {
+    await batch.flush();
+    if (batch.incomplete && options.config.fail_on_error) {
+      throw new Error("Some turns were not completely delivered; they will be retried");
+    }
+  }
   return exportedTurnIds;
 }
