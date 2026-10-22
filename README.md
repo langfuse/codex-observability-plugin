@@ -67,6 +67,7 @@ The remaining options are settable both ways, as a `langfuse.json` key or as the
 - `trace_seed` derives deterministic trace ids, so a headless caller knows a run's trace id up front. Use a unique seed per session.
 - `debug` logs verbosely to stderr, and defaults to `false`.
 - `fail_on_error` fails the hook on upload errors instead of failing open, and defaults to `false`.
+- `max_history_chars` caps how many characters of earlier turns each generation's input carries, and defaults to `200000`. The most recent messages are kept and older ones are replaced by a single "earlier message(s) omitted" marker, with the count recorded in the generation's `codex.history_omitted_messages` metadata. The current turn's own messages are never dropped. Raising it keeps more context in traces but costs memory in the hook on long sessions; `0` drops earlier turns entirely.
 
 Everything the plugin traces is uploaded to Langfuse, including prompts and tool inputs and outputs, so do not enable it for sessions containing data you do not want stored there.
 

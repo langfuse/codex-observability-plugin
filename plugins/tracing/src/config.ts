@@ -27,18 +27,23 @@ export const ConfigSchema = z.object({
   trace_seed: z.string().optional(),
   debug: z.boolean(),
   fail_on_error: z.boolean(),
+  max_history_chars: z.number().int().nonnegative(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
 
 const PartialConfigSchema = ConfigSchema.partial();
 
-const DEFAULTS: Pick<Config, "enabled" | "base_url" | "skill_tags" | "debug" | "fail_on_error"> = {
+const DEFAULTS: Pick<
+  Config,
+  "enabled" | "base_url" | "skill_tags" | "debug" | "fail_on_error" | "max_history_chars"
+> = {
   enabled: false,
   base_url: "https://cloud.langfuse.com",
   skill_tags: true,
   debug: false,
   fail_on_error: false,
+  max_history_chars: 200_000,
 };
 
 const CodexAuthSchema = z
@@ -58,6 +63,11 @@ function parseBoolean(value: unknown): boolean | undefined {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return undefined;
+}
+
+function parseNonNegativeInt(value: unknown): number | undefined {
+  const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof n === "number" && Number.isInteger(n) && n >= 0 ? n : undefined;
 }
 
 function parseTags(value: unknown): string[] | undefined {
@@ -115,6 +125,8 @@ async function readConfigFile(file: string): Promise<Partial<Config> | undefined
         skill_tags: raw.skill_tags != null ? parseBoolean(raw.skill_tags) : undefined,
         debug: raw.debug != null ? parseBoolean(raw.debug) : undefined,
         fail_on_error: raw.fail_on_error != null ? parseBoolean(raw.fail_on_error) : undefined,
+        max_history_chars:
+          raw.max_history_chars != null ? parseNonNegativeInt(raw.max_history_chars) : undefined,
       }),
     );
   } catch {
@@ -171,6 +183,7 @@ function readEnvConfig(env: Record<string, string | undefined>): Partial<Config>
       trace_seed: env.LANGFUSE_CODEX_TRACE_SEED,
       debug: parseBoolean(env.LANGFUSE_CODEX_DEBUG),
       fail_on_error: parseBoolean(env.LANGFUSE_CODEX_FAIL_ON_ERROR),
+      max_history_chars: parseNonNegativeInt(env.LANGFUSE_CODEX_MAX_HISTORY_CHARS),
     }),
   );
 }

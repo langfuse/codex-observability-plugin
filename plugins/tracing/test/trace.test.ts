@@ -28,6 +28,7 @@ const baseConfig: Config = {
   skill_tags: true,
   debug: false,
   fail_on_error: false,
+  max_history_chars: 200_000,
 };
 
 const fixturesRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/sessions");
@@ -267,6 +268,75 @@ describe("convertRollout", () => {
       { role: "assistant", content: "First answer" },
       { role: "user", content: "Second question" },
     ]);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("keeps only the most recent history within max_history_chars", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-hist-cap-"));
+    const day = path.join(dir, "sessions", "2026", "06", "03");
+    fs.mkdirSync(day, { recursive: true });
+    const file = path.join(day, "rollout-history-cap.jsonl");
+    const ts = (n: number): string => `2026-06-03T09:00:${String(n).padStart(2, "0")}.000Z`;
+    const turn = (n: number, id: string, prompt: string, answer: string): unknown[] => [
+      { timestamp: ts(n), type: "event_msg", payload: { type: "task_started", turn_id: id } },
+      { timestamp: ts(n), type: "event_msg", payload: { type: "user_message", message: prompt } },
+      {
+        timestamp: ts(n + 1),
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: answer }],
+        },
+      },
+      { timestamp: ts(n + 1), type: "event_msg", payload: { type: "token_count", info: {} } },
+      { timestamp: ts(n + 2), type: "event_msg", payload: { type: "task_complete", turn_id: id } },
+    ];
+    fs.writeFileSync(
+      file,
+      [
+        { timestamp: ts(0), type: "session_meta", payload: { id: "sess-hist-cap" } },
+        ...turn(1, "t1", "First question", "First answer"),
+        ...turn(4, "t2", "Second question", "Second answer"),
+        ...turn(7, "t3", "Third question", "Third answer"),
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n"),
+    );
+
+    await convertAndMark(file, {
+      config: { ...baseConfig, max_history_chars: 30 },
+      stoppedTurnId: "t3",
+    });
+
+    const generations = exporter
+      .getFinishedSpans()
+      .filter((s) => obsType(s) === "generation")
+      .sort((a, b) => startMs(a) - startMs(b));
+    expect(generations).toHaveLength(3);
+
+    expect(JSON.parse(attr(generations[1], "langfuse.observation.input"))).toEqual([
+      { role: "user", content: "First question" },
+      { role: "assistant", content: "First answer" },
+      { role: "user", content: "Second question" },
+    ]);
+    expect(
+      attr(generations[1], "langfuse.observation.metadata.codex.history_omitted_messages"),
+    ).toBe("");
+
+    expect(JSON.parse(attr(generations[2], "langfuse.observation.input"))).toEqual([
+      {
+        role: "system",
+        content: "[2 earlier message(s) omitted from this trace to stay within max_history_chars]",
+      },
+      { role: "user", content: "Second question" },
+      { role: "assistant", content: "Second answer" },
+      { role: "user", content: "Third question" },
+    ]);
+    expect(
+      attr(generations[2], "langfuse.observation.metadata.codex.history_omitted_messages"),
+    ).toBe("2");
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
