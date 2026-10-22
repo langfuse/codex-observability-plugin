@@ -13,8 +13,9 @@ const SKILL_ACCESS_TOOLS = new Set([
 ]);
 const SKILL_ACCESS_FIELDS = ["cmd", "command", "code", "uri"];
 
-const SKILL_DOC = /([A-Za-z0-9._@+-]+)\/SKILL\.md\b/g;
-const SKILL_SCRIPT = /\bskills\/(?:\.[A-Za-z0-9._-]+\/)?([A-Za-z0-9._@+-]+)\/scripts\//g;
+const SKILL_DOC = /([A-Za-z0-9._@+-]+)[\\/]+SKILL\.md\b/g;
+const SKILL_SCRIPT =
+  /\bskills[\\/]+(?:\.[A-Za-z0-9._-]+[\\/]+)?([A-Za-z0-9._@+-]+)[\\/]+scripts[\\/]+/g;
 const SKILL_PROMPT_FRAGMENT = /<skill>\s*<name>([^<\n]+)<\/name>/g;
 
 const MAX_SKILL_NAME_LENGTH = 64;
