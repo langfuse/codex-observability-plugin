@@ -94,6 +94,16 @@ function extractToolError(payload: EventMsgPayload): string | undefined {
 
 type MutableTurn = Turn & { lastAgentMessage?: string; userInputFallback?: string };
 
+// A turn started by /goal receives its objective inside an internal context
+// wrapper; surface the objective itself rather than the raw wrapper.
+const GOAL_OBJECTIVE_RE =
+  /<codex_internal_context\b[^>]*\bsource="goal"[^>]*>[\s\S]*?<objective>([\s\S]*?)<\/objective>/;
+
+function extractGoalObjective(text: string): string | null {
+  const m = text.match(GOAL_OBJECTIVE_RE);
+  return m ? m[1].trim() : null;
+}
+
 const TURN_OPENING_EVENTS = new Set(["user_message", "item_completed", "agent_message"]);
 
 function newTurn(startTime: number): MutableTurn {
@@ -259,7 +269,7 @@ export function parseSession(lines: RolloutLine[]): {
           if (isInjectedContext) {
             collect(injectedContext, text);
           } else if (!turn!.userInputFallback) {
-            turn!.userInputFallback = text;
+            turn!.userInputFallback = extractGoalObjective(text) ?? text;
           }
         }
       } else if (p.type === "function_call") {
@@ -373,10 +383,10 @@ export function parseSession(lines: RolloutLine[]): {
       else if (!turn) continue;
 
       if (et === "user_message" && typeof p.message === "string") {
-        if (!turn!.userInput) turn!.userInput = p.message;
+        if (!turn!.userInput && !turn!.userInputFallback) turn!.userInput = p.message;
       } else if (et === "item_completed" && p.item?.type === "UserMessage") {
         const text = extractMessageText(p.item.content);
-        if (text && !turn!.userInput) turn!.userInput = text;
+        if (text && !turn!.userInput && !turn!.userInputFallback) turn!.userInput = text;
       } else if (et === "item_completed" && p.item?.type === "SubAgentActivity") {
         if (p.item.kind === "started" && typeof p.item.agent_thread_id === "string") {
           recordSubagentThread(p.item.agent_thread_id, p.item.id);
