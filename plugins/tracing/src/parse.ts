@@ -3,6 +3,7 @@ import type {
   EventMsgPayload,
   MessageContentPart,
   ModelStep,
+  NestedResult,
   ResponseItemFunctionCall,
   ResponseItemFunctionCallOutput,
   ResponseItemCustomToolCall,
@@ -74,6 +75,29 @@ export function parseArgs(raw: string): unknown {
   } catch {
     return raw;
   }
+}
+
+/**
+ * Code-mode `exec` outputs are arrays of text parts; each nested command result is a JSON
+ * part carrying `exit_code`. Anything else (plain text, other shapes) is ignored.
+ */
+export function extractNestedResults(output: unknown): NestedResult[] {
+  if (!Array.isArray(output)) return [];
+  const results: NestedResult[] = [];
+  for (const part of output) {
+    const text = part && typeof part === "object" ? (part as { text?: unknown }).text : undefined;
+    if (typeof text !== "string" || !text.trimStart().startsWith("{")) continue;
+    const parsed = parseArgs(text);
+    if (parsed === null || typeof parsed !== "object") continue;
+    const { exit_code, chunk_id, output: nestedOutput } = parsed as Record<string, unknown>;
+    if (typeof exit_code !== "number" || !Number.isFinite(exit_code)) continue;
+    results.push({
+      exitCode: exit_code,
+      ...(typeof chunk_id === "string" ? { chunkId: chunk_id } : {}),
+      ...(nestedOutput !== undefined ? { output: toText(nestedOutput) } : {}),
+    });
+  }
+  return results;
 }
 
 function extractToolError(payload: EventMsgPayload): string | undefined {
@@ -318,6 +342,8 @@ export function parseSession(lines: RolloutLine[]): {
         const tc = toolCallsById.get(out.call_id);
         if (tc) {
           if (tc.output == null) tc.output = out.output;
+          const nested = extractNestedResults(out.output);
+          if (nested.length > 0) tc.nested = [...(tc.nested ?? []), ...nested];
           tc.endTime = Math.max(tc.endTime ?? ts, ts);
           if (tc.name === "spawn_agent") {
             const spawned = parseArgs(toText(out.output));

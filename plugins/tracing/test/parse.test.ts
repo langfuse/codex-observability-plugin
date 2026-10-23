@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { parseSession } from "../src/parse.js";
+import { extractNestedResults, parseSession } from "../src/parse.js";
 import type { RolloutLine } from "../src/types.js";
 
 const fixturesDir = path.join(
@@ -685,5 +685,38 @@ describe("user prompt extraction", () => {
     const { turns } = parseSession(lines);
 
     expect(turns[0]!.userInput).toBe("sag mal hallo");
+  });
+});
+
+describe("extractNestedResults", () => {
+  const part = (text: string) => ({ type: "input_text", text });
+
+  it("reads exit_code, chunk_id and output from JSON parts", () => {
+    const nested = extractNestedResults([
+      part("Script completed\nWall time 1s\nOutput:\n"),
+      part(JSON.stringify({ chunk_id: "a4b7b0", exit_code: 2, output: "rg: No such file" })),
+      part(JSON.stringify({ exit_code: 0, output: "ok" })),
+    ]);
+    expect(nested).toEqual([
+      { exitCode: 2, chunkId: "a4b7b0", output: "rg: No such file" },
+      { exitCode: 0, output: "ok" },
+    ]);
+  });
+
+  it("ignores malformed parts and non-array outputs without throwing", () => {
+    expect(extractNestedResults("plain text")).toEqual([]);
+    expect(extractNestedResults(undefined)).toEqual([]);
+    expect(
+      extractNestedResults([
+        null,
+        "str",
+        { type: "input_text" },
+        part("{not json"),
+        part("[1,2]"),
+        part("null"),
+        part(JSON.stringify({ output: "no exit code" })),
+        part(JSON.stringify({ exit_code: "2" })),
+      ]),
+    ).toEqual([]);
   });
 });

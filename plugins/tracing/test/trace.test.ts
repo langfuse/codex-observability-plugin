@@ -1157,3 +1157,107 @@ describe("attached mode (external parent span)", () => {
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
 });
+
+describe("nested exec results", () => {
+  const nestedOutput = [
+    { type: "input_text", text: "Script completed\nOutput:\n" },
+    {
+      type: "input_text",
+      text: JSON.stringify({
+        chunk_id: "a4b7b0",
+        exit_code: 2,
+        output: "rg: path: No such file or directory",
+      }),
+    },
+    {
+      type: "input_text",
+      text: JSON.stringify({ chunk_id: "c1d2e3", exit_code: 1, output: "" }),
+    },
+    { type: "input_text", text: JSON.stringify({ exit_code: 0, output: "fine" }) },
+    { type: "input_text", text: "{not json" },
+  ];
+
+  let run = 0;
+
+  // Unique session/call ids per conversion so spans from another test cannot leak in.
+  async function convertExec(output: unknown): Promise<ReadableSpan[]> {
+    run += 1;
+    const callId = `call-n${run}`;
+    const dir = stageFixtures(); // A sessions/YYYY/MM/DD layout bounds the subagent scan.
+    const file = path.join(dir, "rollout-nested-main.jsonl");
+    const line = (timestamp: string, type: string, payload: unknown) =>
+      JSON.stringify({ timestamp, type, payload });
+    fs.writeFileSync(
+      file,
+      [
+        line("2026-06-03T10:00:00.000Z", "session_meta", { id: `sess-nested-${run}` }),
+        line("2026-06-03T10:00:01.000Z", "event_msg", {
+          type: "task_started",
+          turn_id: "turn-n",
+        }),
+        line("2026-06-03T10:00:01.300Z", "event_msg", {
+          type: "user_message",
+          message: "search",
+        }),
+        line("2026-06-03T10:00:02.000Z", "response_item", {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: callId,
+          input: "await tools.exec_command({})",
+        }),
+        line("2026-06-03T10:00:03.000Z", "response_item", {
+          type: "custom_tool_call_output",
+          call_id: callId,
+          output,
+        }),
+        line("2026-06-03T10:00:04.000Z", "event_msg", {
+          type: "task_complete",
+          turn_id: "turn-n",
+        }),
+      ].join("\n") + "\n",
+    );
+    await convertRollout(file, { config: baseConfig });
+    const tools = exporter.getFinishedSpans().filter((s) => obsType(s) === "tool");
+    const parent = tools.find(
+      (s) => attr(s, "langfuse.observation.metadata.codex.call_id") === callId,
+    );
+    if (!parent) return [];
+    return [parent, ...tools.filter((s) => parentId(s) === parent.spanContext().spanId)];
+  }
+
+  it("emits a child per nested result, ERROR only for exit >= 2, parent unchanged", async () => {
+    const [parent, ...children] = await convertExec(nestedOutput);
+    expect(children).toHaveLength(3);
+
+    const failed = children.find(
+      (s) => attr(s, "langfuse.observation.metadata.codex.exit_code") === "2",
+    )!;
+    expect(failed.name).toBe("exec_command");
+    expect(attr(failed, "langfuse.observation.level")).toBe("ERROR");
+    expect(attr(failed, "langfuse.observation.status_message")).toContain("code 2");
+    expect(attr(failed, "langfuse.observation.metadata.codex.chunk_id")).toBe("a4b7b0");
+    expect(attr(failed, "langfuse.observation.output")).toContain("No such file");
+
+    const noMatch = children.find(
+      (s) => attr(s, "langfuse.observation.metadata.codex.exit_code") === "1",
+    )!;
+    expect(attr(noMatch, "langfuse.observation.level")).not.toBe("ERROR");
+    const ok = children.find(
+      (s) => attr(s, "langfuse.observation.metadata.codex.exit_code") === "0",
+    )!;
+    expect(attr(ok, "langfuse.observation.level")).not.toBe("ERROR");
+
+    expect(attr(parent, "langfuse.observation.level")).not.toBe("ERROR");
+    expect(attr(parent, "langfuse.observation.status_message")).toBe("");
+    expect(attr(parent, "langfuse.observation.metadata.codex.nested_failed_count")).toBe("1");
+  });
+
+  it("emits no children and no failed count when nothing nested is parseable", async () => {
+    const tools = await convertExec([
+      { type: "input_text", text: "{not json" },
+      { type: "input_text", text: JSON.stringify({ output: "x" }) },
+    ]);
+    expect(tools).toHaveLength(1);
+    expect(attr(tools[0]!, "langfuse.observation.metadata.codex.nested_failed_count")).toBe("");
+  });
+});

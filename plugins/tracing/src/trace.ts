@@ -566,6 +566,9 @@ function emitToolCall(
   parent: LangfuseObservation,
   fallbackEnd: number,
 ): LangfuseObservation {
+  const nested = tc.nested ?? [];
+  // Exit 1 is not counted: rg/grep use it for "no match".
+  const nestedFailed = nested.filter((n) => n.exitCode >= 2).length;
   const tool = startObservation(
     toolObservationName(tc),
     {
@@ -573,7 +576,11 @@ function emitToolCall(
       output: tc.output != null ? toText(tc.output) : undefined,
       level: tc.error ? "ERROR" : undefined,
       statusMessage: tc.error,
-      metadata: { "codex.call_id": tc.callId, "codex.tool_name": tc.name || "tool" },
+      metadata: {
+        "codex.call_id": tc.callId,
+        "codex.tool_name": tc.name || "tool",
+        ...(nestedFailed > 0 ? { "codex.nested_failed_count": nestedFailed } : {}),
+      },
     },
     {
       asType: "tool",
@@ -581,7 +588,28 @@ function emitToolCall(
       parentSpanContext: parent.otelSpan.spanContext(),
     },
   );
-  tool.end(new Date(tc.endTime ?? fallbackEnd));
+  const end = new Date(tc.endTime ?? fallbackEnd);
+  for (const n of nested) {
+    const failed = n.exitCode >= 2;
+    startObservation(
+      "exec_command",
+      {
+        output: n.output,
+        level: failed ? "ERROR" : undefined,
+        statusMessage: failed ? `nested command exited with code ${n.exitCode}` : undefined,
+        metadata: {
+          "codex.exit_code": n.exitCode,
+          ...(n.chunkId !== undefined ? { "codex.chunk_id": n.chunkId } : {}),
+        },
+      },
+      {
+        asType: "tool",
+        startTime: new Date(tc.startTime),
+        parentSpanContext: tool.otelSpan.spanContext(),
+      },
+    ).end(end);
+  }
+  tool.end(end);
   return tool;
 }
 

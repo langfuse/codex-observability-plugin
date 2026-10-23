@@ -187,6 +187,13 @@ export type SystemPrompt = {
   changed: boolean;
 };
 
+/** A nested command result reported inside a tool output (e.g. each command run by code-mode `exec`). */
+export type NestedResult = {
+  exitCode: number;
+  chunkId?: string;
+  output?: string;
+};
+
 export type ToolCall = {
   callId: string;
   name: string;
@@ -195,6 +202,7 @@ export type ToolCall = {
   endTime?: number;
   output?: unknown;
   error?: string;
+  nested?: NestedResult[];
   mcp?: { server: string; tool: string };
 };
 
