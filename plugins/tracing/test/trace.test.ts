@@ -26,6 +26,7 @@ const baseConfig: Config = {
   secret_key: "sk-lf-test",
   base_url: "https://cloud.langfuse.com",
   skill_tags: true,
+  max_history_chars: 200_000,
   debug: false,
   fail_on_error: false,
 };
@@ -266,6 +267,93 @@ describe("convertRollout", () => {
       { role: "user", content: "First question" },
       { role: "assistant", content: "First answer" },
       { role: "user", content: "Second question" },
+    ]);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("keeps only the most recent messages within max_history_chars in a generation input", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-bounded-"));
+    const day = path.join(dir, "sessions", "2026", "06", "03");
+    fs.mkdirSync(day, { recursive: true });
+    const file = path.join(day, "rollout-bounded.jsonl");
+    const ts = (n: number): string => `2026-06-03T09:00:${String(n).padStart(2, "0")}.000Z`;
+    const LONG_ANSWER = "x".repeat(1000);
+    const lines: unknown[] = [
+      { timestamp: ts(0), type: "session_meta", payload: { id: "sess-bounded" } },
+      { timestamp: ts(1), type: "event_msg", payload: { type: "task_started", turn_id: "t1" } },
+      { timestamp: ts(1), type: "event_msg", payload: { type: "user_message", message: "First" } },
+      {
+        timestamp: ts(2),
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: LONG_ANSWER }],
+        },
+      },
+      { timestamp: ts(2), type: "event_msg", payload: { type: "token_count", info: {} } },
+      { timestamp: ts(3), type: "event_msg", payload: { type: "task_complete", turn_id: "t1" } },
+      { timestamp: ts(4), type: "event_msg", payload: { type: "task_started", turn_id: "t2" } },
+      { timestamp: ts(4), type: "event_msg", payload: { type: "user_message", message: "Second" } },
+      {
+        timestamp: ts(5),
+        type: "response_item",
+        payload: { type: "function_call", name: "exec_command", call_id: "c1", arguments: "{}" },
+      },
+      {
+        timestamp: ts(6),
+        type: "response_item",
+        payload: { type: "function_call_output", call_id: "c1", output: "a.txt" },
+      },
+      { timestamp: ts(6), type: "event_msg", payload: { type: "token_count", info: {} } },
+      {
+        timestamp: ts(7),
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Done" }],
+        },
+      },
+      { timestamp: ts(7), type: "event_msg", payload: { type: "token_count", info: {} } },
+      { timestamp: ts(8), type: "event_msg", payload: { type: "task_complete", turn_id: "t2" } },
+    ];
+    fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n"));
+
+    const generationInputs = () =>
+      exporter
+        .getFinishedSpans()
+        .filter((s) => obsType(s) === "generation")
+        .sort((a, b) => startMs(a) - startMs(b))
+        .map((s) => JSON.parse(attr(s, "langfuse.observation.input")));
+
+    await convertRollout(file, { config: { ...baseConfig, max_history_chars: 500 } });
+    const bounded = generationInputs();
+    expect(bounded).toHaveLength(3);
+    expect(bounded[0]).toEqual([{ role: "user", content: "First" }]);
+    // The long answer of turn 1 no longer fits, so it and everything before it
+    // collapse into one marker; earlier steps of the current turn are bounded too.
+    expect(bounded[2]).toEqual([
+      {
+        role: "system",
+        content: "[2 earlier message(s) omitted: the conversation exceeds max_history_chars (500)]",
+      },
+      { role: "user", content: "Second" },
+      expect.objectContaining({ role: "assistant", tool_calls: [expect.anything()] }),
+      expect.objectContaining({ role: "tool", tool_call_id: "c1", content: "a.txt" }),
+    ]);
+
+    exporter.reset();
+    fs.rmSync(`${file}.langfuse`, { force: true });
+    await convertRollout(file, { config: { ...baseConfig, max_history_chars: 0 } });
+    const unbounded = generationInputs();
+    expect(unbounded[2]).toEqual([
+      { role: "user", content: "First" },
+      { role: "assistant", content: LONG_ANSWER },
+      { role: "user", content: "Second" },
+      expect.objectContaining({ role: "assistant" }),
+      expect.objectContaining({ role: "tool", content: "a.txt" }),
     ]);
 
     fs.rmSync(dir, { recursive: true, force: true });

@@ -37,6 +37,8 @@ function seededId(kind: "trace" | "span"): string {
 }
 
 export type Instrumentation = {
+  /** Export every buffered span; rejects if the export fails. */
+  flush: () => Promise<void>;
   /** Flush buffered spans and tear down the tracer provider. */
   shutdown: () => Promise<void>;
 };
@@ -57,10 +59,11 @@ function buildResource() {
  * instrumentation loading. Registering the provider also installs the
  * AsyncLocalStorage context manager that `propagateAttributes` relies on.
  *
- * We use `exportMode: "batched"` and flush once at the end: the whole rollout
- * is converted in-process, so batching every span into one (or a few) requests
- * is far faster than one request per span — important for the hook's timeout
- * budget. `shutdown()` below calls `forceFlush()` before the process exits.
+ * We use `exportMode: "batched"` and the hook calls `flush()` once per turn:
+ * batching a turn's spans into one (or a few) requests is far faster than one
+ * request per span — important for the hook's timeout budget — while flushing
+ * between turns keeps a backlog of pending turns from piling up in memory.
+ * `shutdown()` below calls `forceFlush()` before the process exits.
  */
 export function setupInstrumentation(config: Config): Instrumentation {
   const spanProcessor = new LangfuseSpanProcessor({
@@ -86,6 +89,7 @@ export function setupInstrumentation(config: Config): Instrumentation {
   setLangfuseTracerProvider(provider);
 
   return {
+    flush: () => spanProcessor.forceFlush(),
     shutdown: async () => {
       await spanProcessor.forceFlush();
       await provider.shutdown();

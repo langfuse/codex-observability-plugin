@@ -39,6 +39,37 @@ describe("getConfig", () => {
     expect(config.base_url).toBe("https://cloud.langfuse.com");
     expect(config.fail_on_error).toBe(false);
     expect(config.skill_tags).toBe(true);
+    expect(config.max_history_chars).toBe(200_000);
+  });
+
+  it("reads max_history_chars from the config file and the environment", async () => {
+    const home = makeTmpHome({
+      rel: ".codex/langfuse.json",
+      contents: { public_key: "pk-lf-file", max_history_chars: 5000 },
+    });
+    const fromFile = await getConfig({ home, cwd: emptyHome(), env: {} });
+    expect(fromFile.max_history_chars).toBe(5000);
+
+    const fromEnv = await getConfig({
+      home,
+      cwd: emptyHome(),
+      env: { LANGFUSE_CODEX_MAX_HISTORY_CHARS: "0" },
+    });
+    expect(fromEnv.max_history_chars).toBe(0);
+  });
+
+  it("ignores an invalid max_history_chars without discarding the rest of the file", async () => {
+    const home = makeTmpHome({
+      rel: ".codex/langfuse.json",
+      contents: { public_key: "pk-lf-file", max_history_chars: -1 },
+    });
+    const config = await getConfig({
+      home,
+      cwd: emptyHome(),
+      env: { LANGFUSE_CODEX_MAX_HISTORY_CHARS: "lots" },
+    });
+    expect(config.public_key).toBe("pk-lf-file");
+    expect(config.max_history_chars).toBe(200_000);
   });
 
   it("ignores a stale max_chars key without discarding the rest of the file", async () => {
