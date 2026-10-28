@@ -19,6 +19,7 @@ function turnWith(toolCalls: ToolCall[], promptSkills: string[] = []): Turn {
     endTime: 1,
     steps: [{ startTime: 0, endTime: 1, toolCalls }],
     subagentThreadIds: [],
+    subagentSpawnCallIds: {},
     promptSkills,
     userImages: [],
     toolDefinitions: [],

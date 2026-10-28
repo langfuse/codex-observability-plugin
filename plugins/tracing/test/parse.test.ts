@@ -392,6 +392,38 @@ describe("parseSession", () => {
     const { turns } = parseSession(lines);
     expect(turns).toHaveLength(1);
     expect(turns[0].subagentThreadIds).toEqual(["thread-a"]);
+    expect(turns[0].subagentSpawnCallIds).toEqual({ "thread-a": "c1" });
+  });
+
+  it("links item_completed subagent activity to its spawn call", () => {
+    const { turns } = parseSession([
+      { timestamp: "2026-06-03T13:00:00.000Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-06-03T13:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t" },
+      },
+      {
+        timestamp: "2026-06-03T13:00:02.000Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "SubAgentActivity",
+            id: "spawn-call",
+            kind: "started",
+            agent_thread_id: "thread-a",
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-03T13:00:03.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t" },
+      },
+    ]);
+    expect(turns[0].subagentThreadIds).toEqual(["thread-a"]);
+    expect(turns[0].subagentSpawnCallIds).toEqual({ "thread-a": "spawn-call" });
   });
 
   it("records subagent threads from the spawn tool output when no spawn event is emitted", () => {
@@ -441,6 +473,11 @@ describe("parseSession", () => {
     const { turns } = parseSession(lines);
     expect(turns).toHaveLength(1);
     expect(turns[0].subagentThreadIds).toEqual(["thread-a", "thread-b", "thread-c"]);
+    expect(turns[0].subagentSpawnCallIds).toEqual({
+      "thread-a": "c1",
+      "thread-b": "c2",
+      "thread-c": "c3",
+    });
   });
 
   it("treats a trailing, never-completed turn as not completed", () => {

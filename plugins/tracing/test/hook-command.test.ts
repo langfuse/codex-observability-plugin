@@ -163,6 +163,80 @@ describe("bundled Stop hook command", () => {
     }
   });
 
+  it("marks each delivered turn even when a later turn's upload fails", async () => {
+    const codexHome = makeTempDir("lf-codex-home-");
+    const sessionCwd = makeTempDir("lf-codex-cwd-");
+    const sessionsDir = path.join(sessionCwd, "sessions", "2026", "06", "03");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const rollout = path.join(sessionsDir, "rollout.jsonl");
+
+    const event = (payload: Record<string, unknown>) =>
+      JSON.stringify({ timestamp: "2026-06-03T12:00:00.000Z", type: "event_msg", payload });
+    fs.writeFileSync(
+      rollout,
+      [
+        JSON.stringify({
+          timestamp: "2026-06-03T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: "sess-backlog", cli_version: "0.160.1" },
+        }),
+        event({ type: "task_started", turn_id: "turn-1" }),
+        event({ type: "user_message", message: "First" }),
+        event({ type: "agent_message", message: "One" }),
+        event({ type: "task_complete", turn_id: "turn-1" }),
+        event({ type: "task_started", turn_id: "turn-2" }),
+        event({ type: "user_message", message: "Second" }),
+        event({ type: "agent_message", message: "Two" }),
+        event({ type: "task_complete", turn_id: "turn-2" }),
+      ].join("\n") + "\n",
+    );
+
+    const received: string[] = [];
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(chunk as Buffer));
+      req.on("end", () => {
+        received.push(Buffer.concat(chunks).toString("utf-8"));
+        // Accept the first turn's upload, then reject with a non-retryable status.
+        res.writeHead(received.length === 1 ? 200 : 400, { "content-type": "application/json" });
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+
+    try {
+      const { code } = await runShellCommand(readHookCommand(), {
+        cwd: sessionCwd,
+        env: {
+          ...process.env,
+          PLUGIN_ROOT: pluginRootDir,
+          CODEX_HOME: codexHome,
+          HOME: codexHome,
+          TRACE_TO_LANGFUSE: "true",
+          LANGFUSE_PUBLIC_KEY: "pk-lf-test",
+          LANGFUSE_SECRET_KEY: "sk-lf-test",
+          LANGFUSE_BASE_URL: `http://127.0.0.1:${port}`,
+        },
+        input: JSON.stringify({
+          hook_event_name: "Stop",
+          session_id: "sess-backlog",
+          turn_id: "turn-2",
+          transcript_path: rollout,
+        }),
+      });
+
+      expect(code).toBe(0);
+      expect(received).toHaveLength(2);
+      expect(received[0]).toContain("turn-1");
+      expect(received[0]).not.toContain("turn-2");
+      expect(received[1]).toContain("turn-2");
+      expect(fs.readFileSync(`${rollout}.langfuse`, "utf-8").trim()).toBe("turn-1");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("re-exports a rollout as a byte-identical payload so Langfuse deduplicates it", async () => {
     const codexHome = makeTempDir("lf-codex-home-");
     const sessionCwd = makeTempDir("lf-codex-cwd-");

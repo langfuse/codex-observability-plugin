@@ -127,8 +127,15 @@ export type EventMsgPayload = {
     last_token_usage?: TokenUsage;
     model_context_window?: number;
   } | null;
-  item?: { type?: string; content?: MessageContentPart[] } | null;
+  item?: {
+    type?: string;
+    id?: string;
+    kind?: string;
+    agent_thread_id?: string;
+    content?: MessageContentPart[];
+  } | null;
   new_thread_id?: string | null;
+  event_id?: string;
   kind?: string;
   agent_thread_id?: string | null;
   invocation?: { server?: string; tool?: string; arguments?: unknown } | null;
@@ -211,6 +218,7 @@ export type Turn = {
   finalOutput?: string;
   steps: ModelStep[];
   subagentThreadIds: string[];
+  subagentSpawnCallIds: Record<string, string>;
   promptSkills: string[];
   completed: boolean;
   aborted: boolean;
