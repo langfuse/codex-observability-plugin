@@ -337,7 +337,7 @@ function assistantMessage(step: ModelStep): ChatMlMessage {
             id: tc.callId,
             type: "function" as const,
             function: {
-              name: toolObservationName(tc),
+              name: tc.name,
               ...(tc.args !== undefined ? { arguments: toText(tc.args) } : {}),
             },
           })),
@@ -350,7 +350,7 @@ function toolMessages(step: ModelStep): ChatMlMessage[] {
   return step.toolCalls.map((tc) => ({
     role: "tool" as const,
     tool_call_id: tc.callId,
-    name: toolObservationName(tc),
+    name: tc.name,
     content: tc.output != null ? toText(tc.output) : (tc.error ?? ""),
     ...(tc.error ? { is_error: true as const } : {}),
   }));

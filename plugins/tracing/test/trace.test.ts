@@ -783,7 +783,23 @@ describe("convertRollout", () => {
 
   it("captures web search, local shell, and MCP tool calls with specific names", async () => {
     const dir = stageFixtures();
-    await convertRollout(path.join(dir, "rollout-tools-main.jsonl"), { config: baseConfig });
+    const file = path.join(dir, "rollout-tools-main.jsonl");
+    const lines = fs
+      .readFileSync(file, "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    lines.splice(
+      lines.findIndex((line) => line.payload.role === "assistant"),
+      0,
+      {
+        timestamp: "2026-06-03T12:00:04.700Z",
+        type: "event_msg",
+        payload: { type: "token_count" },
+      },
+    );
+    fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+    await convertRollout(file, { config: baseConfig });
 
     const spans = exporter.getFinishedSpans();
     const toolNames = spans
@@ -798,6 +814,30 @@ describe("convertRollout", () => {
 
     const shell = spans.find((s) => s.name === "local_shell")!;
     expect(attr(shell, "langfuse.observation.output")).toContain("clean");
+
+    const generations = spans
+      .filter((s) => obsType(s) === "generation")
+      .sort((a, b) => startMs(a) - startMs(b));
+    expect(generations).toHaveLength(2);
+    const history = JSON.parse(attr(generations[1], "langfuse.observation.input"));
+    expect(history).toContainEqual(
+      expect.objectContaining({
+        role: "assistant",
+        tool_calls: expect.arrayContaining([
+          expect.objectContaining({
+            id: "call-mcp",
+            function: expect.objectContaining({ name: "linear__create_issue" }),
+          }),
+        ]),
+      }),
+    );
+    expect(history).toContainEqual(
+      expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call-mcp",
+        name: "linear__create_issue",
+      }),
+    );
   });
 
   it("does not re-export a settings event between turns on every invocation", async () => {
@@ -975,6 +1015,38 @@ describe("deterministic trace ids (trace_seed)", () => {
 });
 
 describe("skill observations", () => {
+  it.each([true, false])(
+    "keeps real tool names in generation history with skill_tags=%s",
+    async (skill_tags) => {
+      const dir = stageFixtures();
+      await convertRollout(path.join(dir, "rollout-skills-main.jsonl"), {
+        config: { ...baseConfig, skill_tags },
+      });
+
+      const spans = exporter.getFinishedSpans();
+      const generations = spans
+        .filter((s) => obsType(s) === "generation")
+        .sort((a, b) => startMs(a) - startMs(b));
+      expect(generations).toHaveLength(2);
+      const history = JSON.parse(attr(generations[1], "langfuse.observation.input"));
+      expect(history).toContainEqual(
+        expect.objectContaining({
+          role: "assistant",
+          tool_calls: expect.arrayContaining([
+            expect.objectContaining({
+              id: "call-doc",
+              function: expect.objectContaining({ name: "exec_command" }),
+            }),
+          ]),
+        }),
+      );
+      expect(history).toContainEqual(
+        expect.objectContaining({ role: "tool", tool_call_id: "call-doc", name: "exec_command" }),
+      );
+      expect(spans.find((s) => s.name === "skill:bug-mentor")).toBeDefined();
+    },
+  );
+
   it("names a skill-loading command after the skill, keeping its own timing", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-skills-main.jsonl"), { config: baseConfig });
