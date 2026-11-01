@@ -133,6 +133,10 @@ export type EventMsgPayload = {
     kind?: string;
     agent_thread_id?: string;
     content?: MessageContentPart[];
+    source?: string;
+    status?: string;
+    aggregated_output?: string | null;
+    exit_code?: number | null;
   } | null;
   new_thread_id?: string | null;
   event_id?: string;

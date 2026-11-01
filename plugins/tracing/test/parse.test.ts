@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { parseSession } from "../src/parse.js";
-import type { RolloutLine } from "../src/types.js";
+import type { EventMsgPayload, RolloutLine } from "../src/types.js";
 
 const fixturesDir = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -65,6 +65,81 @@ describe("parseSession", () => {
 
     expect(step2.text).toBe("There are two files: file1.txt and file2.txt.");
     expect(step2.toolCalls).toHaveLength(0);
+  });
+
+  it.each([
+    { status: "failed", aggregated_output: "check failed", exit_code: 1, error: "check failed" },
+    { status: "failed", aggregated_output: "", exit_code: 2, error: "Exit code: 2" },
+    { status: "failed", aggregated_output: "", exit_code: null, error: "failed" },
+    { status: "declined", aggregated_output: "", exit_code: null, error: "declined" },
+  ])("records CommandExecution $status with error '$error'", ({ error, ...details }) => {
+    const lines = loadFixture("rollout-command-failed.jsonl");
+    const completion = lines.find((line) => line.payload.type === "item_completed")!;
+    Object.assign((completion.payload as EventMsgPayload).item!, details);
+    const { turns } = parseSession(lines);
+    const tools = turns[0].steps.flatMap((step) => step.toolCalls);
+    expect(tools).toHaveLength(2);
+    expect(tools[0]).toMatchObject({
+      callId: "call-exec",
+      error,
+      output: "Process running with session ID 123",
+      endTime: Date.parse("2026-06-03T14:00:02.100Z"),
+    });
+    expect(tools[1].error).toBeUndefined();
+  });
+
+  it.each([
+    { source: "user_shell" },
+    { id: "unknown-call" },
+    { status: "completed" },
+    { status: "in_progress" },
+  ])("ignores unrelated or non-failing command completions: %j", (details) => {
+    const lines = loadFixture("rollout-command-failed.jsonl");
+    const completion = lines.find((line) => line.payload.type === "item_completed")!;
+    Object.assign((completion.payload as EventMsgPayload).item!, details);
+    const tools = parseSession(lines).turns[0].steps.flatMap((step) => step.toolCalls);
+    expect(tools).toHaveLength(2);
+    expect(tools.every((tool) => tool.error === undefined)).toBe(true);
+  });
+
+  it("preserves an existing error when a command completion arrives", () => {
+    const lines = loadFixture("rollout-command-failed.jsonl");
+    lines.splice(7, 0, {
+      timestamp: "2026-06-03T14:00:03.150Z",
+      type: "event_msg",
+      payload: {
+        type: "exec_command_end",
+        call_id: "call-exec",
+        status: "failed",
+        error: "original error",
+      },
+    });
+    const tools = parseSession(lines).turns[0].steps.flatMap((step) => step.toolCalls);
+    expect(tools[0].error).toBe("original error");
+  });
+
+  it("does not attach a previous turn's command failure to the current turn", () => {
+    const lines = loadFixture("rollout-command-failed.jsonl");
+    lines.splice(
+      5,
+      0,
+      {
+        timestamp: "2026-06-03T14:00:02.200Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "turn-command-failed" },
+      },
+      {
+        timestamp: "2026-06-03T14:00:02.300Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-next" },
+      },
+    );
+    (lines[lines.length - 1].payload as EventMsgPayload).turn_id = "turn-next";
+    const { turns } = parseSession(lines);
+    expect(turns).toHaveLength(2);
+    const tools = turns.flatMap((turn) => turn.steps.flatMap((step) => step.toolCalls));
+    expect(tools.map((tool) => tool.callId)).toEqual(["call-exec", "call-stdin"]);
+    expect(tools.every((tool) => tool.error === undefined)).toBe(true);
   });
 
   it("captures an explicitly invoked skill without letting it leak into the prompt", () => {
