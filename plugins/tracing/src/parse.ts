@@ -381,6 +381,20 @@ export function parseSession(lines: RolloutLine[]): {
         if (p.item.kind === "started" && typeof p.item.agent_thread_id === "string") {
           recordSubagentThread(p.item.agent_thread_id, p.item.id);
         }
+      } else if (et === "item_completed" && p.item?.type === "CommandExecution") {
+        const item = p.item;
+        if (
+          item.source !== "user_shell" &&
+          typeof item.id === "string" &&
+          (item.status === "failed" || item.status === "declined")
+        ) {
+          // Nested commands have their own IDs; do not attribute their failures to the wrapper.
+          const tc = toolCallsById.get(item.id);
+          if (tc)
+            tc.error ??=
+              item.aggregated_output ||
+              (typeof item.exit_code === "number" ? `Exit code: ${item.exit_code}` : item.status);
+        }
       } else if (et === "agent_message" && typeof p.message === "string") {
         turn!.lastAgentMessage = p.message;
       } else if (et === "token_count") {

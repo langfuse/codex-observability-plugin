@@ -152,6 +152,20 @@ describe("convertRollout", () => {
     expect(attr(generations[0], "langfuse.observation.output")).toContain("call-1");
   });
 
+  it("marks the matching command as ERROR from item_completed without legacy end events", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-command-failed.jsonl"), { config: baseConfig });
+    const tools = exporter
+      .getFinishedSpans()
+      .filter((s) => obsType(s) === "tool")
+      .sort((a, b) => startMs(a) - startMs(b));
+    expect(tools).toHaveLength(2);
+    expect(attr(tools[0], "langfuse.observation.metadata.codex.call_id")).toBe("call-exec");
+    expect(attr(tools[0], "langfuse.observation.level")).toBe("ERROR");
+    expect(attr(tools[0], "langfuse.observation.status_message")).toBe("check failed");
+    expect(attr(tools[1], "langfuse.observation.level")).not.toBe("ERROR");
+  });
+
   it("ends a generation at the tool call it emitted, not at the end of the step", async () => {
     const dir = stageFixtures();
     await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), { config: baseConfig });
