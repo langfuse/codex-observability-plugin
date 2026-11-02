@@ -10,7 +10,11 @@ function toolCall(name: string, args: unknown): ToolCall {
 }
 
 function exec(cmd: string): ToolCall {
-  return toolCall("exec_command", { cmd, workdir: "/repo", max_output_tokens: 10_000 });
+  return toolCall("exec_command", {
+    cmd,
+    workdir: "/repo",
+    max_output_tokens: 10_000,
+  });
 }
 
 function turnWith(toolCalls: ToolCall[], promptSkills: string[] = []): Turn {
@@ -77,6 +81,55 @@ describe("skillsForToolCall", () => {
         }),
       ),
     ).toEqual([]);
+  });
+
+  it("ignores skill paths that a command only stages, copies, or prints", () => {
+    expect(skillsForToolCall(exec("git add -- .agents/skills/not-loaded/SKILL.md"))).toEqual([]);
+    expect(
+      skillsForToolCall(exec("git add -- .agents/skills/not-loaded/scripts/check.py")),
+    ).toEqual([]);
+    expect(skillsForToolCall(exec("git status -- .agents/skills/not-loaded/SKILL.md"))).toEqual([]);
+    expect(
+      skillsForToolCall(exec("cp .agents/skills/not-loaded/SKILL.md /tmp/not-loaded.md")),
+    ).toEqual([]);
+    expect(skillsForToolCall(exec("echo .agents/skills/not-loaded/SKILL.md"))).toEqual([]);
+  });
+
+  it("keeps reads behind wrappers, shell -c, and git read subcommands", () => {
+    expect(
+      skillsForToolCall(exec("sudo -u root cat .agents/skills/security-review/SKILL.md")),
+    ).toEqual(["security-review"]);
+    expect(
+      skillsForToolCall(exec("env FOO=1 cat .agents/skills/security-review/SKILL.md")),
+    ).toEqual(["security-review"]);
+    expect(
+      skillsForToolCall(exec('bash -c "cat .agents/skills/security-review/SKILL.md"')),
+    ).toEqual(["security-review"]);
+    expect(skillsForToolCall(exec('bash -c "git add .agents/skills/not-loaded/SKILL.md"'))).toEqual(
+      [],
+    );
+    expect(
+      skillsForToolCall(exec("git show HEAD:.agents/skills/security-review/SKILL.md")),
+    ).toEqual(["security-review"]);
+  });
+
+  it("classifies nested code-mode commands instead of the surrounding program", () => {
+    expect(
+      skillsForToolCall(
+        toolCall(
+          "exec",
+          'await tools.exec_command({cmd:"git add .agents/skills/not-loaded/SKILL.md"});',
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      skillsForToolCall(
+        toolCall(
+          "exec",
+          'await tools.exec_command({cmd:"cat .agents/skills/security-review/SKILL.md"});',
+        ),
+      ),
+    ).toEqual(["security-review"]);
   });
 });
 
