@@ -61,6 +61,38 @@ describe("skillsForToolCall", () => {
     ).toEqual(["figma-use"]);
   });
 
+  it.each([
+    [
+      "native Windows command",
+      exec(String.raw`Get-Content C:\Users\dev\.codex\skills\pdf\SKILL.md`),
+    ],
+    [
+      "escaped Windows path inside exec source",
+      toolCall(
+        "exec",
+        String.raw`const r = await tools.exec_command({cmd:"Get-Content C:\\Users\\dev\\.codex\\skills\\pdf\\SKILL.md"});`,
+      ),
+    ],
+    [
+      "Windows argument array",
+      toolCall("local_shell", {
+        command: ["Get-Content", String.raw`C:\Users\dev\.codex\skills\pdf\SKILL.md`],
+      }),
+    ],
+    ["mixed separators", exec(String.raw`Get-Content C:\Users\dev/.codex/skills/pdf\SKILL.md`)],
+  ])("detects a SKILL.md read with %s", (_label, call) => {
+    expect(skillsForToolCall(call)).toEqual(["pdf"]);
+  });
+
+  it.each([
+    String.raw`node C:\Users\dev\.codex\skills\pdf\scripts\read.mjs`,
+    String.raw`node C:\\Users\\dev\\.codex\\skills\\pdf\\scripts\\read.mjs`,
+    String.raw`node C:\Users\dev\.codex\skills\.system\pdf\scripts\read.mjs`,
+    String.raw`node C:\Users\dev/.codex/skills/pdf\scripts/read.mjs`,
+  ])("detects a Windows skill script: %s", (cmd) => {
+    expect(skillsForToolCall(exec(cmd))).toEqual(["pdf"]);
+  });
+
   it("ignores searches, unrelated source paths, and non-command tools", () => {
     expect(skillsForToolCall(exec("find .agents -type f -name 'SKILL.md'"))).toEqual([]);
     expect(
