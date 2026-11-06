@@ -219,6 +219,40 @@ describe("convertRollout", () => {
     expect(meta("changed_this_turn")).toBe("true");
   });
 
+  it.each(["", undefined])("keeps the history fallback for tool name %j", async (name) => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+    const lines = fs
+      .readFileSync(file, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    // Malformed rollouts still need usable names in both halves of the tool exchange.
+    lines.find((line) => line.payload.type === "function_call").payload.name = name;
+    fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+    await convertRollout(file, { config: baseConfig });
+
+    const generations = exporter
+      .getFinishedSpans()
+      .filter((s) => obsType(s) === "generation")
+      .sort((a, b) => startMs(a) - startMs(b));
+    const history = JSON.parse(attr(generations[1], "langfuse.observation.input"));
+    expect(history).toContainEqual(
+      expect.objectContaining({
+        role: "assistant",
+        tool_calls: [
+          expect.objectContaining({
+            id: "call-1",
+            function: expect.objectContaining({ name: "tool" }),
+          }),
+        ],
+      }),
+    );
+    expect(history).toContainEqual(
+      expect.objectContaining({ role: "tool", tool_call_id: "call-1", name: "tool" }),
+    );
+  });
+
   it("carries earlier turns of the thread into a later turn's generation input", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-hist-"));
     const day = path.join(dir, "sessions", "2026", "06", "03");
