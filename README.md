@@ -71,6 +71,31 @@ The remaining options are settable both ways, as a `langfuse.json` key or as the
 
 Everything the plugin traces is uploaded to Langfuse, including prompts and tool inputs and outputs, so do not enable it for sessions containing data you do not want stored there.
 
+## Incremental rollout reads
+
+The Stop hook checkpoints acknowledged main-thread turns in a private
+`<rollout>.langfuse.cursor` file. Subsequent hooks seek to that byte offset rather
+than re-reading the acknowledged prefix. The checkpoint retains parser context
+(instructions and discovered tools), original turn numbering, and only the
+conversation suffix needed by `max_history_chars`. It contains conversation
+content; protect it like the transcript. It is written atomically with mode `0600`
+on POSIX systems; Windows inherits directory ACLs.
+
+The existing `.langfuse` delivery receipts remain authoritative. A checkpoint is
+committed only after the export callback has completed and its turn receipt is
+present. A stopped turn without a completion record is still delivered, but its
+bytes remain retryable until completion or the next turn starts. Partial trailing
+lines are deferred until a newline is appended.
+
+Missing/corrupt checkpoints, a replaced or truncated file, removed receipts, and
+changes to `max_history_chars` rebuild from the transcript. Concurrent hooks may
+replace the checkpoint with an older acknowledged position: this causes extra
+reads, not lost turns. Subagent/ancestor traversal and unbounded history
+(`max_history_chars: 0`) retain the existing full-read path for fidelity. Session
+directory metadata discovery is unchanged. This optimization reduces repeated
+main-rollout reads; it does not claim constant total I/O or eliminate the cost of
+converting a single large turn.
+
 ## Contributing
 
 See the [contributing guide](./CONTRIBUTING.md).

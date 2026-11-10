@@ -15,8 +15,9 @@ import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
 import { currentIdSeed, seedIds } from "./instrumentation.js";
-import { parseArgs, parseSession } from "./parse.js";
+import { parseArgs, parseSession, type ParserContext } from "./parse.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
+import { openIncrementalRollout, type HistoryMessage } from "./rollout.js";
 import { skillsForToolCall, traceTags } from "./skills.js";
 import type {
   EventMsgPayload,
@@ -388,6 +389,7 @@ function boundedConversation(
   earlier: readonly ChatMlMessage[],
   current: readonly ChatMlMessage[],
   maxChars: number,
+  previouslyOmitted = 0,
 ): ChatMlMessage[] {
   const all = [...earlier, ...current];
   if (maxChars <= 0) return all;
@@ -399,14 +401,30 @@ function boundedConversation(
     used += chars;
     start--;
   }
-  if (start === 0) return all;
+  if (start === 0 && previouslyOmitted === 0) return all;
   return [
     {
       role: "system",
-      content: `[${start} earlier message(s) omitted: the conversation exceeds max_history_chars (${maxChars})]`,
+      content: `[${start + previouslyOmitted} earlier message(s) omitted: the conversation exceeds max_history_chars (${maxChars})]`,
     },
     ...all.slice(start),
   ];
+}
+
+function retainHistory(
+  messages: ChatMlMessage[],
+  maxChars: number,
+): { messages: ChatMlMessage[]; omitted: number } {
+  if (maxChars <= 0) return { messages, omitted: 0 };
+  let used = 0;
+  let start = messages.length;
+  while (start > 0) {
+    const chars = serializedChars(messages[start - 1]);
+    if (used + chars > maxChars) break;
+    used += chars;
+    start--;
+  }
+  return { messages: messages.slice(start), omitted: start };
 }
 
 function generationInput(
@@ -469,6 +487,7 @@ async function emitTurn(
     unannouncedSubagents?: SubagentRollout[];
     inheritableTurnIds?: ReadonlySet<string>;
     historyPrefix?: ChatMlMessage[];
+    omittedHistoryMessages?: number;
   },
 ): Promise<void> {
   const isSubagent = sessionMeta.isSubagentThread === true || ctx.parentObservation != null;
@@ -530,6 +549,7 @@ async function emitTurn(
         historyPrefix,
         turnMessages,
         ctx.config.max_history_chars,
+        ctx.omittedHistoryMessages,
       );
       const generation = startObservation(
         isSubagent ? "LLM Subagent" : "LLM",
@@ -685,141 +705,213 @@ export async function convertRollout(
     onTurnExported?: (turnId: string) => Promise<void>;
   },
 ): Promise<string[]> {
-  const { sessionMeta, turns } = parseSession(await loadSession(rolloutFile));
-
-  const historyPrefixes: ChatMlMessage[][] = [];
-  {
-    const seen: ChatMlMessage[] = [];
-    for (const turn of turns) {
-      historyPrefixes.push([...seen]);
-      seen.push(...turnHistoryMessages(turn));
-    }
-  }
-  debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
-
+  // Child/ancestor traversal keeps its full-history ownership semantics. Only
+  // an acknowledged root hook may resume and persist an incremental cursor.
+  const meta = await readSessionMeta(rolloutFile);
   const subagentIndex =
     options.subagentIndex ??
     (await buildSubagentIndex(rolloutFile, {
-      includeEarlierDays: sessionMeta.isSubagentThread === true,
+      includeEarlierDays: meta?.parentThreadId !== undefined,
     }));
-  const seenThreadIds = options.seenThreadIds ?? new Set<string>();
-  seenThreadIds.add(sessionMeta.sessionId);
-
-  const announced = new Set(turns.flatMap((t) => t.subagentThreadIds));
-  const unannounced = (subagentIndex.byParent.get(sessionMeta.sessionId) ?? []).filter(
-    (s) => !announced.has(s.threadId) && !seenThreadIds.has(s.threadId),
-  );
-  const spawnTurnOf =
-    unannounced.length > 0 ? turnIndexByNickname(turns) : new Map<string, number>();
-  const byTurn = new Map<number, SubagentRollout[]>();
-  for (const sub of unannounced) {
-    const viaNickname = sub.nickname !== undefined ? spawnTurnOf.get(sub.nickname) : undefined;
-    const i = viaNickname ?? turnIndexAt(turns, sub.startTime);
-    debugLog(
-      `recovered unannounced subagent ${sub.threadId} for thread ${sessionMeta.sessionId}: ` +
-        `turn ${i + 1} via ${viaNickname !== undefined ? `nickname ${sub.nickname}` : "start time"}`,
+  const hasSubagents =
+    meta?.parentThreadId !== undefined ||
+    (subagentIndex.byParent.get(meta?.threadId ?? "")?.length ?? 0) > 0;
+  const reader =
+    !options.parentObservation &&
+    options.onTurnExported &&
+    !hasSubagents &&
+    options.config.max_history_chars > 0
+      ? await openIncrementalRollout(rolloutFile, options.config.max_history_chars)
+      : undefined;
+  try {
+    const checkpoints = new Map<Turn, { context: ParserContext; offset: number }>();
+    const records = reader?.records;
+    const { sessionMeta, turns } = parseSession(
+      records ? records.map((r) => r.line) : await loadSession(rolloutFile),
+      {
+        context: reader?.checkpoint?.context,
+        onTurn: (turn, context, boundary) => {
+          if (!records || !boundary.stable) return;
+          const offset =
+            boundary.nextLineIndex === 0
+              ? (reader!.checkpoint?.offset ?? 0)
+              : records[boundary.nextLineIndex - 1].end;
+          checkpoints.set(turn, { context, offset });
+        },
+      },
     );
-    byTurn.set(i, [...(byTurn.get(i) ?? []), sub]);
-  }
+    const baseTurnCount = reader?.checkpoint?.turnCount ?? 0;
+    const historyPrefixes: ChatMlMessage[][] = [];
+    const omittedPrefixes: number[] = [];
+    const historiesAfterTurn: Array<{ messages: ChatMlMessage[]; omitted: number }> = [];
+    let history = (reader?.checkpoint?.history ?? []) as ChatMlMessage[];
+    let omitted = reader?.checkpoint?.omittedMessages ?? 0;
+    for (const turn of turns) {
+      historyPrefixes.push(history);
+      omittedPrefixes.push(omitted);
+      const retained = retainHistory(
+        [...history, ...turnHistoryMessages(turn)],
+        options.config.max_history_chars,
+      );
+      history = retained.messages;
+      omitted += retained.omitted;
+      historiesAfterTurn.push({ messages: history, omitted });
+    }
+    if (reader)
+      debugLog(
+        `read ${reader.bytesRead} rollout byte(s) from offset ${reader.checkpoint?.offset ?? 0}`,
+      );
+    debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
 
-  const ancestorTurnIds =
-    options.ancestorTurnIds ??
-    (sessionMeta.isSubagentThread
-      ? await ancestorTurnIdsOf(sessionMeta, subagentIndex)
-      : undefined);
+    const seenThreadIds = options.seenThreadIds ?? new Set<string>();
+    seenThreadIds.add(sessionMeta.sessionId);
 
-  const carriedSubagents: SubagentRollout[] = [];
-  const subagentsFor = (turnIndex: number): SubagentRollout[] | undefined => {
-    const own = byTurn.get(turnIndex) ?? [];
-    const all = carriedSubagents.length > 0 ? [...carriedSubagents, ...own] : own;
-    carriedSubagents.length = 0;
-    return all.length > 0 ? all : undefined;
-  };
+    const announced = new Set(turns.flatMap((t) => t.subagentThreadIds));
+    const unannounced = (subagentIndex.byParent.get(sessionMeta.sessionId) ?? []).filter(
+      (s) => !announced.has(s.threadId) && !seenThreadIds.has(s.threadId),
+    );
+    const spawnTurnOf =
+      unannounced.length > 0 ? turnIndexByNickname(turns) : new Map<string, number>();
+    const byTurn = new Map<number, SubagentRollout[]>();
+    for (const sub of unannounced) {
+      const viaNickname = sub.nickname !== undefined ? spawnTurnOf.get(sub.nickname) : undefined;
+      const i = viaNickname ?? turnIndexAt(turns, sub.startTime);
+      debugLog(
+        `recovered unannounced subagent ${sub.threadId} for thread ${sessionMeta.sessionId}: ` +
+          `turn ${i + 1} via ${viaNickname !== undefined ? `nickname ${sub.nickname}` : "start time"}`,
+      );
+      byTurn.set(i, [...(byTurn.get(i) ?? []), sub]);
+    }
 
-  const skipInherited = (turn: Turn, turnIndex: number): boolean => {
-    if (!turn.turnId || !ancestorTurnIds?.has(turn.turnId)) return false;
-    debugLog(`skipping turn ${turn.turnId}: inherited from an ancestor thread`);
-    carriedSubagents.push(...(byTurn.get(turnIndex) ?? []));
-    return true;
-  };
+    const ancestorTurnIds =
+      options.ancestorTurnIds ??
+      (sessionMeta.isSubagentThread
+        ? await ancestorTurnIdsOf(sessionMeta, subagentIndex)
+        : undefined);
 
-  const inheritableTurnIds = new Set(ancestorTurnIds);
-  for (const turn of turns) {
-    if (turn.turnId) inheritableTurnIds.add(turn.turnId);
-  }
+    const carriedSubagents: SubagentRollout[] = [];
+    const subagentsFor = (turnIndex: number): SubagentRollout[] | undefined => {
+      const own = byTurn.get(turnIndex) ?? [];
+      const all = carriedSubagents.length > 0 ? [...carriedSubagents, ...own] : own;
+      carriedSubagents.length = 0;
+      return all.length > 0 ? all : undefined;
+    };
 
-  if (options.parentObservation) {
+    const skipInherited = (turn: Turn, turnIndex: number): boolean => {
+      if (!turn.turnId || !ancestorTurnIds?.has(turn.turnId)) return false;
+      debugLog(`skipping turn ${turn.turnId}: inherited from an ancestor thread`);
+      carriedSubagents.push(...(byTurn.get(turnIndex) ?? []));
+      return true;
+    };
+
+    const inheritableTurnIds = new Set(ancestorTurnIds);
+    for (const turn of turns) {
+      if (turn.turnId) inheritableTurnIds.add(turn.turnId);
+    }
+
+    if (options.parentObservation) {
+      for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
+        const turn = turns[turnIndex];
+        if (skipInherited(turn, turnIndex)) continue;
+        await emitTurn(turn, sessionMeta, {
+          config: options.config,
+          rolloutFile,
+          parentObservation: options.parentObservation,
+          subagentIndex,
+          seenThreadIds,
+          unannouncedSubagents: subagentsFor(turnIndex),
+          inheritableTurnIds,
+          historyPrefix: historyPrefixes[turnIndex],
+          omittedHistoryMessages: omittedPrefixes[turnIndex],
+        });
+      }
+      return [];
+    }
+
+    const uploaded = await loadUploadedTurnIds(rolloutFile);
+    const exportedTurnIds: string[] = [];
+    const attached = options.parentSpanContext != null;
+
+    const commitTurn = async (turn: Turn, turnIndex: number) => {
+      const checkpoint = checkpoints.get(turn);
+      if (
+        !reader ||
+        !checkpoint ||
+        sessionMeta.isSubagentThread ||
+        turns.some((t) => t.subagentThreadIds.length > 0)
+      )
+        return;
+      const after = historiesAfterTurn[turnIndex];
+      await reader.commit({
+        offset: checkpoint.offset,
+        turnCount: baseTurnCount + turnIndex + 1,
+        context: checkpoint.context,
+        history: after.messages as HistoryMessage[],
+        omittedMessages: after.omitted,
+        lastTurnId: turn.turnId!,
+      });
+    };
+
     for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
       const turn = turns[turnIndex];
+
       if (skipInherited(turn, turnIndex)) continue;
-      await emitTurn(turn, sessionMeta, {
-        config: options.config,
-        rolloutFile,
-        parentObservation: options.parentObservation,
-        subagentIndex,
-        seenThreadIds,
-        unannouncedSubagents: subagentsFor(turnIndex),
-        inheritableTurnIds,
-        historyPrefix: historyPrefixes[turnIndex],
-      });
+
+      if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
+        debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
+        continue;
+      }
+      if (uploaded.has(turn.turnId)) {
+        await commitTurn(turn, turnIndex);
+        continue;
+      }
+
+      const parentSpanContext =
+        options.parentSpanContext ??
+        (await seededTraceParent(options.config, sessionMeta, baseTurnCount + turnIndex + 1));
+
+      const emit = () =>
+        emitTurn(turn, sessionMeta, {
+          config: options.config,
+          rolloutFile,
+          parentSpanContext,
+          attached,
+          subagentIndex,
+          seenThreadIds,
+          unannouncedSubagents: subagentsFor(turnIndex),
+          inheritableTurnIds,
+          historyPrefix: historyPrefixes[turnIndex],
+          omittedHistoryMessages: omittedPrefixes[turnIndex],
+        });
+
+      if (attached) {
+        await emit();
+      } else {
+        const tags = traceTags(options.config, turn);
+        await propagateAttributes(
+          {
+            sessionId: sessionMeta.sessionId,
+            traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
+            ...(options.config.user_id ? { userId: options.config.user_id } : {}),
+            ...(tags.length > 0 ? { tags } : {}),
+            ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
+          },
+          emit,
+        );
+      }
+
+      uploaded.add(turn.turnId);
+      exportedTurnIds.push(turn.turnId);
+      await options.onTurnExported?.(turn.turnId);
+      // A callback may observe delivery without persisting a receipt. In that
+      // case retain the cold-read behavior rather than hiding retryable turns.
+      if (!options.onTurnExported || !(await loadUploadedTurnIds(rolloutFile)).has(turn.turnId))
+        continue;
+      await commitTurn(turn, turnIndex);
     }
-    return [];
+
+    return exportedTurnIds;
+  } finally {
+    await reader?.close();
   }
-
-  const uploaded = await loadUploadedTurnIds(rolloutFile);
-  const exportedTurnIds: string[] = [];
-  const attached = options.parentSpanContext != null;
-
-  for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
-    const turn = turns[turnIndex];
-
-    if (skipInherited(turn, turnIndex)) continue;
-
-    if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
-      debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
-      continue;
-    }
-    if (uploaded.has(turn.turnId)) {
-      continue;
-    }
-
-    const parentSpanContext =
-      options.parentSpanContext ??
-      (await seededTraceParent(options.config, sessionMeta, turnIndex + 1));
-
-    const emit = () =>
-      emitTurn(turn, sessionMeta, {
-        config: options.config,
-        rolloutFile,
-        parentSpanContext,
-        attached,
-        subagentIndex,
-        seenThreadIds,
-        unannouncedSubagents: subagentsFor(turnIndex),
-        inheritableTurnIds,
-        historyPrefix: historyPrefixes[turnIndex],
-      });
-
-    if (attached) {
-      await emit();
-    } else {
-      const tags = traceTags(options.config, turn);
-      await propagateAttributes(
-        {
-          sessionId: sessionMeta.sessionId,
-          traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
-          ...(options.config.user_id ? { userId: options.config.user_id } : {}),
-          ...(tags.length > 0 ? { tags } : {}),
-          ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
-        },
-        emit,
-      );
-    }
-
-    uploaded.add(turn.turnId);
-    exportedTurnIds.push(turn.turnId);
-    await options.onTurnExported?.(turn.turnId);
-  }
-
-  return exportedTurnIds;
 }

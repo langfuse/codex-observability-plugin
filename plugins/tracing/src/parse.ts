@@ -92,6 +92,14 @@ function extractToolError(payload: EventMsgPayload): string | undefined {
   return undefined;
 }
 
+export type ParserContext = {
+  sessionMeta: SessionMeta;
+  developerMessages: string[];
+  injectedContext: string[];
+  toolDefinitions: ToolDefinition[];
+  exportedSegmentCount: number;
+};
+
 type MutableTurn = Turn & { lastAgentMessage?: string; userInputFallback?: string };
 
 const TURN_OPENING_EVENTS = new Set(["user_message", "item_completed", "agent_message"]);
@@ -131,25 +139,36 @@ function sessionMetaFrom(line: RolloutLine): SessionMeta {
   };
 }
 
-export function parseSession(lines: RolloutLine[]): {
+export function parseSession(
+  lines: RolloutLine[],
+  options: {
+    context?: ParserContext;
+    onTurn?: (
+      turn: Turn,
+      context: ParserContext,
+      boundary: { nextLineIndex: number; stable: boolean },
+    ) => void;
+  } = {},
+): {
   sessionMeta: SessionMeta;
   turns: Turn[];
 } {
   const ownHeader = lines.find((line) => line.type === "session_meta");
   const sessionMeta: SessionMeta = ownHeader
     ? sessionMetaFrom(ownHeader)
-    : { sessionId: "unknown" };
+    : (options.context?.sessionMeta ?? { sessionId: "unknown" });
   const turns: Turn[] = [];
 
   let turn: MutableTurn | null = null;
   let step: ModelStep | null = null;
   let toolCallsById = new Map<string, ToolCall>();
   let lastTimestamp = Date.now();
+  let lineIndex = 0;
 
-  const developerMessages: string[] = [];
-  const injectedContext: string[] = [];
-  const toolDefinitions: ToolDefinition[] = [];
-  let exportedSegmentCount = 0;
+  const developerMessages = [...(options.context?.developerMessages ?? [])];
+  const injectedContext = [...(options.context?.injectedContext ?? [])];
+  const toolDefinitions = [...(options.context?.toolDefinitions ?? [])];
+  let exportedSegmentCount = options.context?.exportedSegmentCount ?? 0;
 
   const collect = (into: string[], text: string) => {
     if (!into.includes(text)) into.push(text);
@@ -211,12 +230,27 @@ export function parseSession(lines: RolloutLine[]): {
       turn.systemPrompt = systemPromptFor();
       turn.toolDefinitions = [...toolDefinitions];
       turns.push(turn);
+      options.onTurn?.(
+        turn,
+        {
+          sessionMeta,
+          developerMessages: [...developerMessages],
+          injectedContext: [...injectedContext],
+          toolDefinitions: [...toolDefinitions],
+          exportedSegmentCount,
+        },
+        {
+          nextLineIndex: opts.completed ? lineIndex + 1 : lineIndex,
+          stable: opts.completed || lineIndex < lines.length,
+        },
+      );
     }
     turn = null;
     toolCallsById = new Map();
   };
 
-  for (const line of lines) {
+  for (lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
     const ts = Number.isFinite(Date.parse(line.timestamp))
       ? Date.parse(line.timestamp)
       : lastTimestamp;
