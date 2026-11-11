@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { Config } from "../src/config.js";
 import { openIncrementalRollout } from "../src/rollout.js";
 import { markTurnUploaded } from "../src/sidecar.js";
-import { convertRollout } from "../src/trace.js";
+import { buildSubagentIndex, convertRollout } from "../src/trace.js";
 
 const exporter = new InMemorySpanExporter();
 let provider: NodeTracerProvider;
@@ -348,5 +348,44 @@ describe("incremental root Stop hooks", () => {
         .find((s) => s.name === "Codex Turn")!
         .spanContext().traceId,
     ).toBe(warmTrace);
+  });
+
+  it("does not open earlier sessions when discovering subagents of a timestamped rollout", async () => {
+    const file = stage();
+    const day = path.dirname(file);
+    const own = path.join(day, "rollout-2026-11-10T12-00-00-parent.jsonl");
+    fs.renameSync(file, own);
+    fs.appendFileSync(own, turn(1));
+    const earlier = path.join(day, "rollout-2026-11-10T09-00-00-unrelated.jsonl");
+    fs.writeFileSync(earlier, row("session_meta", { id: "unrelated" }) + turn(1));
+    const later = path.join(day, "rollout-2026-11-10T13-00-00-child.jsonl");
+    fs.writeFileSync(
+      later,
+      row("session_meta", { id: "child-session", parent_thread_id: "test-session" }) + turn(1),
+    );
+    // An unreadable earlier file proves it is never opened during discovery.
+    fs.writeFileSync(earlier, "not json at all\n");
+    const index = await buildSubagentIndex(own);
+    expect(index.byThread.has("unrelated")).toBe(false);
+    expect(index.byParent.get("test-session")?.map((s) => s.threadId)).toEqual(["child-session"]);
+  });
+
+  it("prunes earlier day directories but still finds them when explicitly unbounded", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-day-prune-"));
+    temporary.push(root);
+    const day = path.join(root, "2026", "11", "10");
+    fs.mkdirSync(day, { recursive: true });
+    const own = path.join(day, "rollout-2026-11-10T12-00-00-parent.jsonl");
+    fs.writeFileSync(own, row("session_meta", { id: "test-session" }) + turn(1));
+    const old = path.join(root, "2025", "01", "01");
+    fs.mkdirSync(old, { recursive: true });
+    fs.writeFileSync(
+      path.join(old, "rollout-2025-01-01T00-00-00-ancient.jsonl"),
+      row("session_meta", { id: "ancient-child", parent_thread_id: "test-session" }) + turn(1),
+    );
+    expect((await buildSubagentIndex(own)).byThread.has("ancient-child")).toBe(false);
+    expect(
+      (await buildSubagentIndex(own, { includeEarlierDays: true })).byThread.has("ancient-child"),
+    ).toBe(true);
   });
 });

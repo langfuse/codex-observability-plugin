@@ -14,6 +14,7 @@ import {
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
+import { diagnostic } from "./diagnostics.js";
 import { currentIdSeed, seedIds } from "./instrumentation.js";
 import { parseArgs, parseSession, type ParserContext } from "./parse.js";
 import { loadUploadedTurnIds } from "./sidecar.js";
@@ -102,9 +103,18 @@ export async function buildSubagentIndex(
   options: { includeEarlierDays?: boolean } = {},
 ): Promise<SubagentIndex> {
   const root = path.resolve(path.dirname(rolloutFile), "../../..");
-  const fromDay = path.relative(root, path.dirname(rolloutFile));
+  // `path.relative` yields backslashes on Windows; normalizing keeps the
+  // day-directory pruning active there instead of silently walking all history.
+  const fromDay = path.relative(root, path.dirname(rolloutFile)).split(path.sep).join("/");
   const bounded = !options.includeEarlierDays && /^\d{4}\/\d{2}\/\d{2}$/.test(fromDay);
   const index: SubagentIndex = { byParent: new Map(), byThread: new Map() };
+  // Real rollout names are `rollout-<fixed-width timestamp>-<threadId>.jsonl`,
+  // so lexical order is chronological. A session started before this one cannot
+  // be its subagent, and ancestor lookups only run for child threads (which are
+  // unbounded). Only timestamped names qualify; other layouts keep the old scan.
+  const ROLLOUT_NAME = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-/;
+  const ownName = path.basename(rolloutFile);
+  const skipEarlier = bounded && ROLLOUT_NAME.test(ownName);
 
   async function walk(dir: string, rel: string): Promise<void> {
     if (bounded && rel && rel < fromDay.slice(0, rel.length)) return;
@@ -121,6 +131,7 @@ export async function buildSubagentIndex(
         continue;
       }
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+      if (skipEarlier && ROLLOUT_NAME.test(entry.name) && entry.name < ownName) continue;
       const meta = await readSessionMeta(full);
       if (!meta) continue;
       if (index.byThread.has(meta.threadId)) continue;
@@ -762,6 +773,15 @@ export async function convertRollout(
         `read ${reader.bytesRead} rollout byte(s) from offset ${reader.checkpoint?.offset ?? 0}`,
       );
     debugLog(`parsed ${turns.length} turn(s) from ${path.basename(rolloutFile)}`);
+    diagnostic("rollout_parsed", {
+      mode: reader ? "incremental" : "full",
+      cursor_hit: !!reader?.checkpoint,
+      offset: reader?.checkpoint?.offset ?? 0,
+      bytes_read: reader?.bytesRead ?? -1,
+      turns: turns.length,
+      rss_bytes: process.memoryUsage().rss,
+      heap_bytes: process.memoryUsage().heapUsed,
+    });
 
     const seenThreadIds = options.seenThreadIds ?? new Set<string>();
     seenThreadIds.add(sessionMeta.sessionId);
@@ -831,6 +851,11 @@ export async function convertRollout(
     const uploaded = await loadUploadedTurnIds(rolloutFile);
     const exportedTurnIds: string[] = [];
     const attached = options.parentSpanContext != null;
+    diagnostic("delivery_plan", {
+      parsed_turns: turns.length,
+      receipt_count: uploaded.size,
+      pending_turns: turns.filter((t) => !!t.turnId && !uploaded.has(t.turnId)).length,
+    });
 
     const commitTurn = async (turn: Turn, turnIndex: number) => {
       const checkpoint = checkpoints.get(turn);
@@ -866,6 +891,12 @@ export async function convertRollout(
         continue;
       }
 
+      diagnostic("turn_conversion_started", {
+        turn_index: baseTurnCount + turnIndex + 1,
+        steps: turn.steps.length,
+        tools: turn.steps.reduce((n, s) => n + s.toolCalls.length, 0),
+        rss_bytes: process.memoryUsage().rss,
+      });
       const parentSpanContext =
         options.parentSpanContext ??
         (await seededTraceParent(options.config, sessionMeta, baseTurnCount + turnIndex + 1));
@@ -899,6 +930,10 @@ export async function convertRollout(
           emit,
         );
       }
+      diagnostic("turn_conversion_finished", {
+        turn_index: baseTurnCount + turnIndex + 1,
+        rss_bytes: process.memoryUsage().rss,
+      });
 
       uploaded.add(turn.turnId);
       exportedTurnIds.push(turn.turnId);
