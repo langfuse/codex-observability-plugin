@@ -1,4 +1,5 @@
 import { getConfig } from "./config.js";
+import { diagnostic, diagnosticError } from "./diagnostics.js";
 import { setupInstrumentation } from "./instrumentation.js";
 import { readExternalParentSpanContext } from "./parent-context.js";
 import { markTurnUploaded } from "./sidecar.js";
@@ -21,10 +22,13 @@ let failOnError = process.env.LANGFUSE_CODEX_FAIL_ON_ERROR === "true";
  * hook failures instead.
  */
 export async function runHook(): Promise<void> {
+  const started = Date.now();
+  diagnostic("hook_started");
   let hookInput: HookInput;
   try {
     hookInput = await readStdin<HookInput>();
   } catch (error) {
+    diagnosticError("stdin_failed", error);
     return;
   }
 
@@ -32,16 +36,25 @@ export async function runHook(): Promise<void> {
   setDebug(config.debug);
   failOnError = config.fail_on_error;
 
+  diagnostic("config_loaded", {
+    enabled: config.enabled,
+    has_credentials: !!config.public_key && !!config.secret_key,
+    has_transcript: !!hookInput.transcript_path,
+    has_turn_id: !!hookInput.turn_id,
+  });
   if (!config.enabled) {
     debugLog("tracing disabled (set TRACE_TO_LANGFUSE=true to enable)");
+    diagnostic("hook_skipped", { reason: "disabled" });
     return;
   }
   if (!config.public_key || !config.secret_key) {
     debugLog("missing LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY; skipping");
+    diagnostic("hook_skipped", { reason: "missing_credentials" });
     return;
   }
   if (!hookInput.transcript_path) {
     debugLog("hook payload missing transcript_path; skipping");
+    diagnostic("hook_skipped", { reason: "missing_transcript" });
     return;
   }
 
@@ -65,13 +78,21 @@ export async function runHook(): Promise<void> {
       // flush: a turn marked despite a failed export is lost silently, while
       // an unmarked one is retried.
       onTurnExported: async (turnId) => {
-        await instrumentation.flush();
+        diagnostic("flush_started");
+        try {
+          await instrumentation.flush();
+        } catch (error) {
+          diagnosticError("flush_failed", error);
+          throw error;
+        }
         await markTurnUploaded(transcriptPath, turnId);
+        diagnostic("turn_acknowledged");
       },
     });
   } catch (error) {
     failure = error;
     debugLog("failed to convert rollout:", error);
+    diagnosticError("conversion_failed", error);
   }
 
   try {
@@ -79,8 +100,10 @@ export async function runHook(): Promise<void> {
   } catch (error) {
     failure ??= error;
     debugLog("error during flush/shutdown:", error);
+    diagnosticError("shutdown_failed", error);
   }
 
+  diagnostic("hook_finished", { success: !failure, duration_ms: Date.now() - started });
   if (failure) {
     if (config.fail_on_error) throw failure;
     debugLog("export incomplete; leaving the remaining turns unmarked so they stay retryable");
@@ -88,6 +111,7 @@ export async function runHook(): Promise<void> {
 }
 
 runHook().catch((error) => {
+  diagnosticError("hook_fatal", error);
   if (process.env.LANGFUSE_CODEX_DEBUG === "true") {
     console.error("[langfuse-codex] fatal:", error);
   }

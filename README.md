@@ -71,6 +71,54 @@ The remaining options are settable both ways, as a `langfuse.json` key or as the
 
 Everything the plugin traces is uploaded to Langfuse, including prompts and tool inputs and outputs, so do not enable it for sessions containing data you do not want stored there.
 
+## Incremental rollout reads
+
+The Stop hook checkpoints acknowledged main-thread turns in a private
+`<rollout>.langfuse.cursor` file. Subsequent hooks seek to that byte offset rather
+than re-reading the acknowledged prefix. The checkpoint retains parser context
+(instructions and discovered tools), original turn numbering, and only the
+conversation suffix needed by `max_history_chars`. It contains conversation
+content; protect it like the transcript. It is written atomically with mode `0600`
+on POSIX systems; Windows inherits directory ACLs.
+
+The existing `.langfuse` delivery receipts remain authoritative. A checkpoint is
+committed only after the export callback has completed and its turn receipt is
+present. A stopped turn without a completion record is still delivered, but its
+bytes remain retryable until completion or the next turn starts. Partial trailing
+lines are deferred until a newline is appended.
+
+Missing/corrupt checkpoints, a replaced or truncated file, removed receipts, and
+changes to `max_history_chars` rebuild from the transcript. Concurrent hooks may
+replace the checkpoint with an older acknowledged position: this causes extra
+reads, not lost turns. Subagent/ancestor traversal and unbounded history
+(`max_history_chars: 0`) retain the existing full-read path for fidelity. This
+optimization reduces repeated main-rollout reads; it does not claim constant
+total I/O or eliminate the cost of converting a single large turn.
+
+Subagent discovery still runs on every hook, but its scope is now bounded on all
+platforms: the day-directory pruning previously compared a `path.relative`
+result against a `/`-separated pattern, so on Windows it never matched and every
+hook walked the entire session history. Separators are normalized before the
+check. Within the remaining scope, timestamped rollouts that started before the
+current session are skipped without opening them, since they cannot be its
+subagents. Unannounced-subagent recovery still reads session headers in scope,
+and child threads still scan earlier days. Windows behavior is verified by
+source inspection and path-level tests, not yet on a Windows host.
+
+## Hook diagnostics
+
+Set `LANGFUSE_CODEX_DIAGNOSTICS=true` to retain structured hook progress in
+`$CODEX_HOME/langfuse-diagnostics/hook.jsonl` (default `~/.codex`). The file rotates
+at 1 MiB to `hook.jsonl.previous`. Records include skip reasons, parsing mode,
+cursor position, memory counters, conversion/flush progress and safe error
+categories, never transcript content, credentials, raw errors or full paths.
+They are also written to stderr. Unlike verbose `debug` output, these files can
+be used for failure reports. POSIX files are mode `0600`.
+
+A missing final record can indicate termination or timeout; it does not by
+itself prove an OOM. Diagnostics are best-effort and do not change failure-open
+or upload behavior.
+
 ## Contributing
 
 See the [contributing guide](./CONTRIBUTING.md).
