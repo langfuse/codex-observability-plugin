@@ -1,7 +1,7 @@
 import { getConfig } from "./config.js";
 import { setupInstrumentation } from "./instrumentation.js";
 import { readExternalParentSpanContext } from "./parent-context.js";
-import { markTurnUploaded } from "./sidecar.js";
+import { acquireRunLock, markTurnUploaded } from "./sidecar.js";
 import { convertRollout } from "./trace.js";
 import type { HookInput } from "./types.js";
 import { debugLog, readStdin, setDebug } from "./utils.js";
@@ -50,35 +50,40 @@ export async function runHook(): Promise<void> {
     debugLog("trace_seed ignored: an external parent trace context takes precedence");
   }
 
-  const instrumentation = setupInstrumentation(config);
   const transcriptPath = hookInput.transcript_path;
+  const releaseLock = await acquireRunLock(transcriptPath);
+  const instrumentation = setupInstrumentation(config);
   let failure: unknown;
 
   try {
-    await convertRollout(transcriptPath, {
-      config,
-      parentSpanContext,
-      stoppedTurnId: hookInput.turn_id ?? undefined,
-      // Flush and record each turn before converting the next: a backlog is
-      // delivered incrementally instead of all-or-nothing, and only one turn's
-      // spans are held in memory at a time. Record delivery only after the
-      // flush: a turn marked despite a failed export is lost silently, while
-      // an unmarked one is retried.
-      onTurnExported: async (turnId) => {
-        await instrumentation.flush();
-        await markTurnUploaded(transcriptPath, turnId);
-      },
-    });
-  } catch (error) {
-    failure = error;
-    debugLog("failed to convert rollout:", error);
-  }
+    try {
+      await convertRollout(transcriptPath, {
+        config,
+        parentSpanContext,
+        stoppedTurnId: hookInput.turn_id ?? undefined,
+        // Flush and record each turn before converting the next: a backlog is
+        // delivered incrementally instead of all-or-nothing, and only one turn's
+        // spans are held in memory at a time. Record delivery only after the
+        // flush: a turn marked despite a failed export is lost silently, while
+        // an unmarked one is retried.
+        onTurnExported: async (turnId) => {
+          await instrumentation.flush();
+          await markTurnUploaded(transcriptPath, turnId);
+        },
+      });
+    } catch (error) {
+      failure = error;
+      debugLog("failed to convert rollout:", error);
+    }
 
-  try {
-    await instrumentation.shutdown();
-  } catch (error) {
-    failure ??= error;
-    debugLog("error during flush/shutdown:", error);
+    try {
+      await instrumentation.shutdown();
+    } catch (error) {
+      failure ??= error;
+      debugLog("error during flush/shutdown:", error);
+    }
+  } finally {
+    await releaseLock();
   }
 
   if (failure) {
