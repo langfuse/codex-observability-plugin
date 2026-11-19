@@ -82,13 +82,13 @@ export async function runHook(): Promise<void> {
       failure ??= error;
       debugLog("error during flush/shutdown:", error);
     }
-
-    if (failure) {
-      if (config.fail_on_error) throw failure;
-      debugLog("export incomplete; leaving the remaining turns unmarked so they stay retryable");
-    }
   } finally {
     await releaseLock();
+  }
+
+  if (failure) {
+    if (config.fail_on_error) throw failure;
+    debugLog("export incomplete; leaving the remaining turns unmarked so they stay retryable");
   }
 }
 
