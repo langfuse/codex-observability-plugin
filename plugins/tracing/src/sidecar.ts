@@ -26,12 +26,16 @@ export async function markTurnUploaded(rolloutFile: string, turnId: string): Pro
 /**
  * Single-flight lock for Stop-hook runs. Background hooks can overlap across
  * fast turns, and two runs over the same rollout would upload the same unmarked
- * turns twice. Returns a release function, or null when another run holds the
- * lock (the caller should exit and let the next Stop catch up).
+ * turns twice. A run that arrives while the lock is held waits instead of
+ * exiting: the running export's transcript snapshot may predate the new turn,
+ * so only a later run can deliver it.
+ *
+ * Codex kills background hooks at timeout and session end without letting them
+ * release, so a lock whose owner is gone is reclaimed.
  */
-export async function acquireRunLock(rolloutFile: string): Promise<(() => Promise<void>) | null> {
+export async function acquireRunLock(rolloutFile: string): Promise<() => Promise<void>> {
   const lockPath = `${rolloutFile}.langfuse.lock`;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (;;) {
     try {
       const handle = await fs.open(lockPath, "wx");
       await handle.writeFile(String(process.pid));
@@ -41,13 +45,13 @@ export async function acquireRunLock(rolloutFile: string): Promise<(() => Promis
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      // Codex kills background hooks at timeout and session end, which leaves a
-      // stale lock behind. Steal it if its owner is gone; if the pid was
-      // recycled we merely skip this run and retry at the next Stop.
-      if (attempt === 0 && (await lockOwnerAlive(lockPath))) return null;
+      if (await lockOwnerAlive(lockPath)) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+      await fs.rm(lockPath, { force: true });
     }
   }
-  return null;
 }
 
 async function lockOwnerAlive(lockPath: string): Promise<boolean> {

@@ -52,11 +52,6 @@ export async function runHook(): Promise<void> {
 
   const transcriptPath = hookInput.transcript_path;
   const releaseLock = await acquireRunLock(transcriptPath);
-  if (!releaseLock) {
-    debugLog("another Stop hook is still exporting this rollout; leaving it to finish");
-    return;
-  }
-
   const instrumentation = setupInstrumentation(config);
   let failure: unknown;
 
