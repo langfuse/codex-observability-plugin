@@ -248,7 +248,8 @@ export function parseSession(lines: RolloutLine[]): {
           const s = ensureStep(ts);
           if (text) s.text = s.text ? `${s.text}\n${text}` : text;
         } else if (msg.role === "developer" && text) {
-          collect(developerMessages, text);
+          // Some rollouts mirror the session instructions as a developer message.
+          if (text !== sessionMeta.baseInstructions) collect(developerMessages, text);
         } else if (msg.role === "user" && text) {
           for (const name of skillsForPrompt(text)) {
             if (!turn!.promptSkills.includes(name)) turn!.promptSkills.push(name);

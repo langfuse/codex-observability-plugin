@@ -171,9 +171,27 @@ describe("convertRollout", () => {
     expect(endMs(generations[1])).toBe(Date.parse("2026-06-03T10:00:04.200Z"));
   });
 
-  it("gives each generation the conversation up to that call", async () => {
+  it.each([false, true])("preserves generation history (mirrored base: %s)", async (mirrorBase) => {
     const dir = stageFixtures();
-    await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), { config: baseConfig });
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+    if (mirrorBase) {
+      const lines = fs.readFileSync(file, "utf8").split("\n");
+      lines.splice(
+        2,
+        0,
+        JSON.stringify({
+          timestamp: "2026-06-03T10:00:01.050Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: "You are Codex." }],
+          },
+        }),
+      );
+      fs.writeFileSync(file, lines.join("\n"));
+    }
+    await convertRollout(file, { config: baseConfig });
 
     const spans = exporter.getFinishedSpans();
     expect(spans.find((s) => s.name === "system_prompt")).toBeUndefined();
