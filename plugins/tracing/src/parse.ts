@@ -170,11 +170,44 @@ export function parseSession(lines: RolloutLine[]): {
   };
 
   function newStep(startTime: number): ModelStep {
-    return { startTime, endTime: startTime, toolCalls: [] };
+    return { startTime, endTime: startTime, completionStartTime: undefined, toolCalls: [] };
   }
 
-  const ensureTurn = (ts: number): MutableTurn => (turn ??= newTurn(ts));
-  const ensureStep = (ts: number) => (step ??= newStep(ts));
+  let nextStepStartTime: number | undefined;
+  let pendingToolCallIds = new Set<string>();
+
+  const ensureTurn = (ts: number): MutableTurn => {
+    if (!turn) {
+      turn = newTurn(ts);
+      nextStepStartTime = ts;
+      pendingToolCallIds = new Set();
+    }
+    return turn;
+  };
+
+  const advanceStepStart = (ts: number) => {
+    if (turn && !step && Number.isFinite(ts)) {
+      nextStepStartTime = nextStepStartTime === undefined ? ts : Math.max(nextStepStartTime, ts);
+    }
+  };
+
+  const recordFirstToken = (s: ModelStep, ts: number) => {
+    if (!Number.isFinite(ts) || ts <= 0) return;
+    const clamped = Math.max(s.startTime, ts);
+    s.completionStartTime =
+      s.completionStartTime === undefined ? clamped : Math.min(s.completionStartTime, clamped);
+  };
+
+  const ensureStep = (ts: number): ModelStep => {
+    if (!step) {
+      const start = nextStepStartTime !== undefined ? Math.min(nextStepStartTime, ts) : ts;
+      step = newStep(start);
+      pendingToolCallIds = new Set();
+    }
+    recordFirstToken(step, ts);
+    step.endTime = Math.max(step.endTime, ts);
+    return step;
+  };
 
   const recordSubagentThread = (threadId: string, spawnCallId?: string) => {
     if (!turn!.subagentThreadIds.includes(threadId)) {
@@ -184,11 +217,20 @@ export function parseSession(lines: RolloutLine[]): {
   };
 
   const closeStep = (ts: number, usage?: TokenUsage) => {
-    if (!step) return;
+    if (!step) {
+      nextStepStartTime = ts;
+      return;
+    }
     step.endTime = Math.max(step.endTime, ts);
     if (usage) step.usage = usage;
+    pendingToolCallIds = new Set(
+      step.toolCalls
+        .filter((tc) => tc.endTime === undefined && tc.output == null)
+        .map((tc) => tc.callId),
+    );
     turn!.steps.push(step);
     step = null;
+    nextStepStartTime = ts;
   };
 
   const finishTurn = (ts: number, opts: { completed: boolean; aborted: boolean }) => {
@@ -213,6 +255,8 @@ export function parseSession(lines: RolloutLine[]): {
       turns.push(turn);
     }
     turn = null;
+    nextStepStartTime = undefined;
+    pendingToolCallIds = new Set();
     toolCallsById = new Map();
   };
 
@@ -222,8 +266,14 @@ export function parseSession(lines: RolloutLine[]): {
       : lastTimestamp;
     lastTimestamp = ts;
 
+    if (line.type === "world_state" || line.type === "inter_agent_communication_metadata") {
+      advanceStepStart(ts);
+      continue;
+    }
+
     if (line.type === "turn_context") {
       const t = ensureTurn(ts);
+      advanceStepStart(ts);
       const p = line.payload as TurnContextPayload;
       t.model = p.model ?? t.model;
       const effort = typeof p.effort === "string" ? p.effort : p.reasoning_effort;
@@ -328,6 +378,7 @@ export function parseSession(lines: RolloutLine[]): {
             if (typeof agentId === "string" && agentId) recordSubagentThread(agentId, tc.callId);
           }
         }
+        if (pendingToolCallIds.delete(out.call_id)) advanceStepStart(ts);
       } else if (p.type === "tool_search_output") {
         const namespaces = Array.isArray(p.tools) ? p.tools : [];
         for (const ns of namespaces) {
@@ -347,13 +398,22 @@ export function parseSession(lines: RolloutLine[]): {
           }
         }
       } else if (p.type === "reasoning") {
+        const s = ensureStep(ts);
         const reasoning = extractReasoning(
           p as { content?: unknown[] | string | null; summary?: unknown[] },
         );
         if (reasoning) {
-          const s = ensureStep(ts);
           s.reasoning = s.reasoning ? `${s.reasoning}\n${reasoning}` : reasoning;
         }
+      }
+      if (
+        !step &&
+        turn!.steps.length === 0 &&
+        p.type !== "function_call_output" &&
+        p.type !== "custom_tool_call_output" &&
+        p.type !== "tool_search_output"
+      ) {
+        advanceStepStart(ts);
       }
       continue;
     }
@@ -365,6 +425,8 @@ export function parseSession(lines: RolloutLine[]): {
       if (et === "task_started") {
         if (turn) finishTurn(ts, { completed: false, aborted: false });
         turn = newTurn(ts);
+        nextStepStartTime = ts;
+        pendingToolCallIds = new Set();
         turn.turnId = typeof p.turn_id === "string" ? p.turn_id : undefined;
         continue;
       }
@@ -373,10 +435,37 @@ export function parseSession(lines: RolloutLine[]): {
       else if (!turn) continue;
 
       if (et === "user_message" && typeof p.message === "string") {
+        advanceStepStart(ts);
         if (!turn!.userInput) turn!.userInput = p.message;
       } else if (et === "item_completed" && p.item?.type === "UserMessage") {
+        const completedAt =
+          typeof p.completed_at_ms === "number" &&
+          Number.isFinite(p.completed_at_ms) &&
+          p.completed_at_ms > 0
+            ? p.completed_at_ms
+            : ts;
+        advanceStepStart(completedAt);
         const text = extractMessageText(p.item.content);
         if (text && !turn!.userInput) turn!.userInput = text;
+      } else if (
+        et === "item_completed" &&
+        (p.item?.type === "Reasoning" || p.item?.type === "AgentMessage" || p.item?.type === "Plan")
+      ) {
+        const startedAt =
+          typeof p.started_at_ms === "number" &&
+          Number.isFinite(p.started_at_ms) &&
+          p.started_at_ms > 0
+            ? p.started_at_ms
+            : ts;
+        const completedAt =
+          typeof p.completed_at_ms === "number" &&
+          Number.isFinite(p.completed_at_ms) &&
+          p.completed_at_ms > 0
+            ? p.completed_at_ms
+            : ts;
+        turn!.startTime = Math.min(turn!.startTime, startedAt);
+        const s = ensureStep(startedAt);
+        s.endTime = Math.max(s.endTime, completedAt, ts);
       } else if (et === "item_completed" && p.item?.type === "SubAgentActivity") {
         if (p.item.kind === "started" && typeof p.item.agent_thread_id === "string") {
           recordSubagentThread(p.item.agent_thread_id, p.item.id);
@@ -387,10 +476,32 @@ export function parseSession(lines: RolloutLine[]): {
         if (p.info?.total_token_usage) turn!.totalUsage = p.info.total_token_usage;
         closeStep(ts, p.info?.last_token_usage ?? undefined);
       } else if (et === "task_complete") {
+        closeStep(ts);
+        if (
+          turn!.steps.length > 0 &&
+          typeof p.time_to_first_token_ms === "number" &&
+          Number.isFinite(p.time_to_first_token_ms) &&
+          p.time_to_first_token_ms >= 0
+        ) {
+          const firstStep = turn!.steps[0];
+          const turnFirstTokenTs = turn!.startTime + p.time_to_first_token_ms;
+          const firstStepEnd =
+            firstStep.toolCalls.reduce<number | undefined>(
+              (earliest, tc) =>
+                earliest === undefined ? tc.startTime : Math.min(earliest, tc.startTime),
+              undefined,
+            ) ?? firstStep.endTime;
+          if (turnFirstTokenTs >= firstStep.startTime && turnFirstTokenTs <= firstStepEnd) {
+            recordFirstToken(firstStep, turnFirstTokenTs);
+          }
+        }
         finishTurn(ts, { completed: true, aborted: false });
       } else if (et === "turn_aborted") {
         finishTurn(ts, { completed: true, aborted: true });
       } else {
+        if (et === "thread_settings_applied" && turn!.steps.length === 0) {
+          advanceStepStart(ts);
+        }
         if (et === "collab_agent_spawn_end" && typeof p.new_thread_id === "string") {
           recordSubagentThread(p.new_thread_id, p.call_id);
         }
@@ -432,6 +543,7 @@ export function parseSession(lines: RolloutLine[]): {
               tc.output = p.aggregated_output ?? p.stdout ?? (p as { result?: unknown }).result;
             }
           }
+          if (pendingToolCallIds.has(p.call_id)) advanceStepStart(ts);
         }
       }
       continue;

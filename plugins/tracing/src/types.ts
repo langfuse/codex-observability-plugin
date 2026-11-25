@@ -122,6 +122,9 @@ export type EventMsgPayload = {
   type: string;
   turn_id?: string | null;
   call_id?: string;
+  started_at_ms?: number;
+  completed_at_ms?: number;
+  time_to_first_token_ms?: number;
   info?: {
     total_token_usage?: TokenUsage;
     last_token_usage?: TokenUsage;
@@ -201,6 +204,7 @@ export type ToolCall = {
 export type ModelStep = {
   startTime: number;
   endTime: number;
+  completionStartTime?: number;
   reasoning?: string;
   text?: string;
   toolCalls: ToolCall[];

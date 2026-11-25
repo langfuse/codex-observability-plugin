@@ -51,6 +51,8 @@ describe("parseSession", () => {
     expect(turn.steps).toHaveLength(2);
 
     const [step1, step2] = turn.steps;
+    expect(step1.startTime).toBe(Date.parse("2026-06-03T10:00:01.300Z"));
+    expect(step1.completionStartTime).toBe(Date.parse("2026-06-03T10:00:02.000Z"));
     expect(step1.reasoning).toBe("I'll list files with ls.");
     expect(step1.toolCalls).toHaveLength(1);
     expect(step1.usage?.total_tokens).toBe(120);
@@ -63,6 +65,8 @@ describe("parseSession", () => {
     // End time advanced by the exec_command_end / function_call_output events.
     expect(tool.endTime).toBe(Date.parse("2026-06-03T10:00:03.100Z"));
 
+    expect(step2.startTime).toBe(Date.parse("2026-06-03T10:00:03.100Z"));
+    expect(step2.completionStartTime).toBe(Date.parse("2026-06-03T10:00:04.000Z"));
     expect(step2.text).toBe("There are two files: file1.txt and file2.txt.");
     expect(step2.toolCalls).toHaveLength(0);
   });
@@ -649,6 +653,110 @@ describe("parseSession", () => {
     expect(tool.name).toBe("apply_patch");
     expect(tool.args).toBe("*** Begin Patch");
     expect(tool.output).toBe("patched");
+  });
+
+  it("captures item_completed started_at_ms, encrypted reasoning, and turn TTFT while ignoring late background tool ends", () => {
+    const lines: RolloutLine[] = [
+      { timestamp: "2026-11-23T09:46:46.354Z", type: "session_meta", payload: { id: "s" } },
+      {
+        timestamp: "2026-11-23T09:46:46.355Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "t1" },
+      },
+      {
+        timestamp: "2026-11-23T09:46:46.404Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: "t1",
+          started_at_ms: 1795427206404,
+          completed_at_ms: 1795427206404,
+          item: { type: "UserMessage", id: "u-1", content: [{ type: "text", text: "Go" }] },
+        },
+      },
+      // Step 0: encrypted reasoning + custom_tool_call
+      {
+        timestamp: "2026-11-23T09:46:49.278Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: "t1",
+          started_at_ms: 1795427207375,
+          completed_at_ms: 1795427209278,
+          item: { type: "Reasoning", id: "rs-0" },
+        },
+      },
+      {
+        timestamp: "2026-11-23T09:46:49.280Z",
+        type: "response_item",
+        payload: { type: "reasoning", summary: [], encrypted_content: "litellm_enc:abc" },
+      },
+      {
+        timestamp: "2026-11-23T09:46:49.457Z",
+        type: "response_item",
+        payload: { type: "custom_tool_call", call_id: "call-0", name: "exec", input: "ls()" },
+      },
+      {
+        timestamp: "2026-11-23T09:46:49.533Z",
+        type: "response_item",
+        payload: { type: "custom_tool_call_output", call_id: "call-0", output: "ok" },
+      },
+      {
+        timestamp: "2026-11-23T09:46:49.534Z",
+        type: "event_msg",
+        payload: { type: "token_count", info: {} },
+      },
+      // Late background tool end after token_count must not advance Step 1 startTime
+      {
+        timestamp: "2026-11-23T09:46:50.900Z",
+        type: "event_msg",
+        payload: { type: "exec_command_end", call_id: "call-0", status: "completed", exit_code: 0 },
+      },
+      {
+        timestamp: "2026-11-23T09:46:51.365Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: "t1",
+          started_at_ms: 1795427210624,
+          completed_at_ms: 1795427211365,
+          item: { type: "AgentMessage", id: "msg-1" },
+        },
+      },
+      {
+        timestamp: "2026-11-23T09:46:51.366Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Done" }],
+        },
+      },
+      {
+        timestamp: "2026-11-23T09:46:51.370Z",
+        type: "event_msg",
+        payload: { type: "token_count", info: {} },
+      },
+      {
+        timestamp: "2026-11-23T09:46:51.400Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t1", time_to_first_token_ms: 4270 },
+      },
+    ];
+
+    const { turns } = parseSession(lines);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].steps).toHaveLength(2);
+    expect(turns[0].steps[0]).toMatchObject({
+      startTime: 1795427206404,
+      completionStartTime: 1795427207375,
+      endTime: 1795427209534,
+    });
+    expect(turns[0].steps[1]).toMatchObject({
+      startTime: 1795427209534,
+      completionStartTime: 1795427210624,
+      endTime: 1795427211370,
+    });
   });
 });
 

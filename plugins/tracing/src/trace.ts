@@ -455,6 +455,11 @@ function generationEnd(step: ModelStep): number {
   return Math.max(step.startTime, Math.min(firstToolCall ?? step.endTime, step.endTime));
 }
 
+function generationCompletionStart(step: ModelStep, end: number): Date | undefined {
+  if (step.completionStartTime === undefined) return undefined;
+  return new Date(Math.max(step.startTime, Math.min(step.completionStartTime, end)));
+}
+
 async function emitTurn(
   turn: Turn,
   sessionMeta: SessionMeta,
@@ -526,6 +531,8 @@ async function emitTurn(
 
     for (let i = 0; i < turn.steps.length; i++) {
       const step = turn.steps[i];
+      const stepEnd = generationEnd(step);
+      const completionStartTime = generationCompletionStart(step, stepEnd);
       const conversation = boundedConversation(
         historyPrefix,
         turnMessages,
@@ -543,6 +550,7 @@ async function emitTurn(
           ...(turn.reasoningEffort
             ? { modelParameters: { reasoning_effort: turn.reasoningEffort } }
             : {}),
+          ...(completionStartTime !== undefined ? { completionStartTime } : {}),
           usageDetails: toUsageDetails(step.usage),
           metadata: {
             "codex.step_index": i,
@@ -561,7 +569,7 @@ async function emitTurn(
         if (tc.name === "spawn_agent") spawnObservations.set(tc.callId, observation);
       }
 
-      generation.end(new Date(generationEnd(step)));
+      generation.end(new Date(stepEnd));
       turnMessages.push(assistantMessage(step), ...toolMessages(step));
     }
 
