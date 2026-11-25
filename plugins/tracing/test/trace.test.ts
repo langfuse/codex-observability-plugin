@@ -161,14 +161,169 @@ describe("convertRollout", () => {
       .filter((s) => obsType(s) === "generation")
       .sort((a, b) => startMs(a) - startMs(b));
 
-    expect(startMs(generations[0])).toBe(Date.parse("2026-06-03T10:00:02.000Z"));
+    expect(startMs(generations[0])).toBe(Date.parse("2026-06-03T10:00:01.300Z"));
+    expect(JSON.parse(attr(generations[0], "langfuse.observation.completion_start_time"))).toBe(
+      "2026-06-03T10:00:02.000Z",
+    );
     expect(endMs(generations[0])).toBe(Date.parse("2026-06-03T10:00:02.500Z"));
 
     const tool = spans.find((s) => obsType(s) === "tool")!;
     expect(startMs(tool)).toBe(Date.parse("2026-06-03T10:00:02.500Z"));
     expect(endMs(tool)).toBe(Date.parse("2026-06-03T10:00:03.100Z"));
 
+    expect(startMs(generations[1])).toBe(Date.parse("2026-06-03T10:00:03.100Z"));
+    expect(JSON.parse(attr(generations[1], "langfuse.observation.completion_start_time"))).toBe(
+      "2026-06-03T10:00:04.000Z",
+    );
     expect(endMs(generations[1])).toBe(Date.parse("2026-06-03T10:00:04.200Z"));
+  });
+
+  it("populates completionStartTime and request startTime for paginated rollouts with encrypted reasoning", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-paginated-ttft-"));
+    const day = path.join(dir, "sessions", "2026", "11", "23");
+    fs.mkdirSync(day, { recursive: true });
+    const file = path.join(day, "rollout-paginated-ttft.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        {
+          timestamp: "2026-11-23T09:46:46.354Z",
+          type: "session_meta",
+          payload: { id: "sess-paginated", cli_version: "0.170.0", model_provider: "openai" },
+        },
+        {
+          timestamp: "2026-11-23T09:46:46.355Z",
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "turn-1" },
+        },
+        {
+          timestamp: "2026-11-23T09:46:46.400Z",
+          type: "turn_context",
+          payload: { model: "gpt-6-luna", effort: "medium" },
+        },
+        {
+          timestamp: "2026-11-23T09:46:46.403Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Inspect repo" }],
+          },
+        },
+        {
+          timestamp: "2026-11-23T09:46:46.404Z",
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            turn_id: "turn-1",
+            started_at_ms: 1795427206404,
+            completed_at_ms: 1795427206404,
+            item: { type: "UserMessage", id: "u-1", content: [{ type: "text", text: "Inspect" }] },
+          },
+        },
+        {
+          timestamp: "2026-11-23T09:46:51.365Z",
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            turn_id: "turn-1",
+            started_at_ms: 1795427207375,
+            completed_at_ms: 1795427211365,
+            item: { type: "Reasoning", id: "rs-1" },
+          },
+        },
+        {
+          timestamp: "2026-11-23T09:46:51.366Z",
+          type: "response_item",
+          payload: { type: "reasoning", id: "rs-1", summary: [], encrypted_content: "enc:1" },
+        },
+        {
+          timestamp: "2026-11-23T09:46:54.482Z",
+          type: "response_item",
+          payload: { type: "custom_tool_call", call_id: "call-1", name: "exec", input: "ls()" },
+        },
+        {
+          timestamp: "2026-11-23T09:46:54.533Z",
+          type: "response_item",
+          payload: { type: "custom_tool_call_output", call_id: "call-1", output: "ok" },
+        },
+        {
+          timestamp: "2026-11-23T09:46:54.534Z",
+          type: "event_msg",
+          payload: { type: "token_count", info: {} },
+        },
+        {
+          timestamp: "2026-11-23T09:47:00.425Z",
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            turn_id: "turn-1",
+            started_at_ms: 1795427215880,
+            completed_at_ms: 1795427220425,
+            item: { type: "Reasoning", id: "rs-2" },
+          },
+        },
+        {
+          timestamp: "2026-11-23T09:47:00.428Z",
+          type: "response_item",
+          payload: { type: "reasoning", id: "rs-2", summary: [], encrypted_content: "enc:2" },
+        },
+        {
+          timestamp: "2026-11-23T09:47:06.325Z",
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            turn_id: "turn-1",
+            started_at_ms: 1795427225695,
+            completed_at_ms: 1795427226324,
+            item: { type: "AgentMessage", id: "msg-2" },
+          },
+        },
+        {
+          timestamp: "2026-11-23T09:47:06.326Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Done" }],
+          },
+        },
+        {
+          timestamp: "2026-11-23T09:47:06.330Z",
+          type: "event_msg",
+          payload: { type: "token_count", info: {} },
+        },
+        {
+          timestamp: "2026-11-23T09:47:06.535Z",
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-1", time_to_first_token_ms: 2959 },
+        },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n"),
+    );
+
+    await convertRollout(file, { config: baseConfig });
+
+    const generations = exporter
+      .getFinishedSpans()
+      .filter((s) => obsType(s) === "generation")
+      .sort((a, b) => startMs(a) - startMs(b));
+    expect(generations).toHaveLength(2);
+
+    expect(startMs(generations[0])).toBe(1795427206404);
+    expect(JSON.parse(attr(generations[0], "langfuse.observation.completion_start_time"))).toBe(
+      "2026-11-23T09:46:47.375Z",
+    );
+    expect(endMs(generations[0])).toBe(1795427214482);
+
+    expect(startMs(generations[1])).toBe(1795427214534);
+    expect(JSON.parse(attr(generations[1], "langfuse.observation.completion_start_time"))).toBe(
+      "2026-11-23T09:46:55.880Z",
+    );
+    expect(endMs(generations[1])).toBe(1795427226330);
+
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it("gives each generation the conversation up to that call", async () => {
