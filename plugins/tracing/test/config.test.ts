@@ -40,6 +40,7 @@ describe("getConfig", () => {
     expect(config.fail_on_error).toBe(false);
     expect(config.skill_tags).toBe(true);
     expect(config.max_history_chars).toBe(200_000);
+    expect(config.incremental_export).toBe(false);
   });
 
   it("reads max_history_chars from the config file and the environment", async () => {
@@ -279,5 +280,22 @@ describe("getConfig", () => {
       env: { LANGFUSE_CODEX_FAIL_ON_ERROR: "false" },
     });
     expect(fromEnv.fail_on_error).toBe(false);
+  });
+
+  it("reads incremental_export from config file and LANGFUSE_CODEX_INCREMENTAL_EXPORT", async () => {
+    const home = makeTmpHome({
+      rel: ".codex/langfuse.json",
+      contents: { incremental_export: true },
+    });
+
+    const fromFile = await getConfig({ home, cwd: emptyHome(), env: {} });
+    expect(fromFile.incremental_export).toBe(true);
+
+    const fromEnv = await getConfig({
+      home,
+      cwd: emptyHome(),
+      env: { LANGFUSE_CODEX_INCREMENTAL_EXPORT: "false" },
+    });
+    expect(fromEnv.incremental_export).toBe(false);
   });
 });

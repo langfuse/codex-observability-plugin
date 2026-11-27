@@ -32,6 +32,7 @@ const baseConfig: Config = {
   base_url: "https://cloud.langfuse.com",
   skill_tags: true,
   max_history_chars: 200_000,
+  incremental_export: false,
   debug: false,
   fail_on_error: false,
   trace_seed: "ci-run-42",

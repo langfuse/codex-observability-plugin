@@ -26,6 +26,7 @@ export const ConfigSchema = z.object({
   skill_tags: z.boolean(),
   trace_seed: z.string().optional(),
   max_history_chars: z.number().int().nonnegative(),
+  incremental_export: z.boolean(),
   debug: z.boolean(),
   fail_on_error: z.boolean(),
 });
@@ -36,12 +37,19 @@ const PartialConfigSchema = ConfigSchema.partial();
 
 const DEFAULTS: Pick<
   Config,
-  "enabled" | "base_url" | "skill_tags" | "max_history_chars" | "debug" | "fail_on_error"
+  | "enabled"
+  | "base_url"
+  | "skill_tags"
+  | "max_history_chars"
+  | "incremental_export"
+  | "debug"
+  | "fail_on_error"
 > = {
   enabled: false,
   base_url: "https://cloud.langfuse.com",
   skill_tags: true,
   max_history_chars: 200_000,
+  incremental_export: false,
   debug: false,
   fail_on_error: false,
 };
@@ -130,6 +138,8 @@ async function readConfigFile(file: string): Promise<Partial<Config> | undefined
         skill_tags: raw.skill_tags != null ? parseBoolean(raw.skill_tags) : undefined,
         max_history_chars:
           raw.max_history_chars != null ? parseNonNegativeInt(raw.max_history_chars) : undefined,
+        incremental_export:
+          raw.incremental_export != null ? parseBoolean(raw.incremental_export) : undefined,
         debug: raw.debug != null ? parseBoolean(raw.debug) : undefined,
         fail_on_error: raw.fail_on_error != null ? parseBoolean(raw.fail_on_error) : undefined,
       }),
@@ -187,6 +197,7 @@ function readEnvConfig(env: Record<string, string | undefined>): Partial<Config>
       skill_tags: parseBoolean(env.LANGFUSE_CODEX_SKILL_TAGS),
       trace_seed: env.LANGFUSE_CODEX_TRACE_SEED,
       max_history_chars: parseNonNegativeInt(env.LANGFUSE_CODEX_MAX_HISTORY_CHARS),
+      incremental_export: parseBoolean(env.LANGFUSE_CODEX_INCREMENTAL_EXPORT),
       debug: parseBoolean(env.LANGFUSE_CODEX_DEBUG),
       fail_on_error: parseBoolean(env.LANGFUSE_CODEX_FAIL_ON_ERROR),
     }),
