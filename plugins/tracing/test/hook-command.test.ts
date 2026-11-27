@@ -309,4 +309,139 @@ describe("bundled Stop hook command", () => {
   it("uses no shell syntax beyond the placeholder Codex substitutes itself", () => {
     expect(readHookCommand().replaceAll("${PLUGIN_ROOT}", "")).not.toContain("$");
   });
+
+  it("ignores mid-turn hooks when incremental_export is false (default) and exports incrementally when true", async () => {
+    const configJson = JSON.parse(fs.readFileSync(hookConfigFile, "utf-8")) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string; async?: boolean }> }>>;
+    };
+    expect(Object.keys(configJson.hooks).sort()).toEqual([
+      "Interrupt",
+      "PostModelRequest",
+      "PostToolUse",
+      "Stop",
+      "SubagentStop",
+      "UserPromptSubmit",
+    ]);
+    expect(configJson.hooks.PostModelRequest[0].hooks[0].async).toBe(true);
+    expect(configJson.hooks.PostToolUse[0].hooks[0].async).toBe(true);
+
+    const codexHome = makeTempDir("lf-codex-home-");
+    const sessionCwd = makeTempDir("lf-codex-cwd-");
+    const sessionsDir = path.join(sessionCwd, "sessions", "2026", "06", "03");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const rollout = path.join(sessionsDir, "rollout.jsonl");
+
+    fs.writeFileSync(
+      rollout,
+      [
+        JSON.stringify({
+          timestamp: "2026-06-03T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: "sess-hook-inc", cli_version: "0.170.0" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-06-03T12:00:01.000Z",
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "turn-hook-inc" },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const received: string[] = [];
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(chunk as Buffer));
+      req.on("end", () => {
+        received.push(Buffer.concat(chunks).toString("utf-8"));
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+
+    try {
+      const baseEnv = {
+        ...process.env,
+        PLUGIN_ROOT: pluginRootDir,
+        CODEX_HOME: codexHome,
+        HOME: codexHome,
+        TRACE_TO_LANGFUSE: "true",
+        LANGFUSE_PUBLIC_KEY: "pk-lf-test",
+        LANGFUSE_SECRET_KEY: "sk-lf-test",
+        LANGFUSE_BASE_URL: `http://127.0.0.1:${port}`,
+      };
+
+      // Default mode: mid-turn UserPromptSubmit is a no-op
+      const disabledRes = await runShellCommand(readHookCommand(), {
+        cwd: sessionCwd,
+        env: baseEnv,
+        input: JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          session_id: "sess-hook-inc",
+          turn_id: "turn-hook-inc",
+          transcript_path: rollout,
+        }),
+      });
+      expect(disabledRes.code).toBe(0);
+      expect(received).toHaveLength(0);
+
+      // Incremental mode: UserPromptSubmit immediately exports root span with prompt input
+      const promptRes = await runShellCommand(readHookCommand(), {
+        cwd: sessionCwd,
+        env: { ...baseEnv, LANGFUSE_CODEX_INCREMENTAL_EXPORT: "true" },
+        input: JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          session_id: "sess-hook-inc",
+          turn_id: "turn-hook-inc",
+          prompt: "Prompt from hook stdin",
+          transcript_path: rollout,
+        }),
+      });
+      expect(promptRes.code).toBe(0);
+      expect(received).toHaveLength(1);
+      expect(received[0]).toContain("Codex Turn");
+      expect(received[0]).toContain("Prompt from hook stdin");
+      expect(fs.existsSync(`${rollout}.langfuse`)).toBe(false);
+
+      // Append an LLM step and run Interrupt -> flushes step and marks WARNING level
+      fs.appendFileSync(
+        rollout,
+        [
+          JSON.stringify({
+            timestamp: "2026-06-03T12:00:02.000Z",
+            type: "response_item",
+            payload: {
+              type: "function_call",
+              name: "exec_command",
+              call_id: "c-int",
+              arguments: '{"cmd":"sleep 99"}',
+            },
+          }),
+          JSON.stringify({
+            timestamp: "2026-06-03T12:00:02.200Z",
+            type: "token_usage_record",
+            payload: { usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } },
+          }),
+        ].join("\n") + "\n",
+      );
+
+      const interruptRes = await runShellCommand(readHookCommand(), {
+        cwd: sessionCwd,
+        env: { ...baseEnv, LANGFUSE_CODEX_INCREMENTAL_EXPORT: "true" },
+        input: JSON.stringify({
+          hook_event_name: "Interrupt",
+          session_id: "sess-hook-inc",
+          turn_id: "turn-hook-inc",
+          transcript_path: rollout,
+        }),
+      });
+      expect(interruptRes.code).toBe(0);
+      expect(received).toHaveLength(2);
+      expect(received[1]).toContain("LLM");
+      expect(received[1]).toContain("WARNING");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });

@@ -17,6 +17,7 @@ const SPAN_ID_HEX_CHARS = 16;
 
 let idSeed: string | undefined;
 let idCounter = 0;
+let explicitSpanSeed: string | undefined;
 
 export function seedIds(seed: string | undefined): void {
   idSeed = seed;
@@ -27,8 +28,29 @@ export function currentIdSeed(): string | undefined {
   return idSeed;
 }
 
+export function deterministicTraceId(seed: string): string {
+  return createHash("sha256").update(`${seed}:trace:0`).digest("hex").slice(0, TRACE_ID_HEX_CHARS);
+}
+
+export function deterministicSpanId(seed: string): string {
+  return createHash("sha256").update(seed).digest("hex").slice(0, SPAN_ID_HEX_CHARS);
+}
+
+export function withSpanSeed<T>(seed: string | undefined, fn: () => T): T {
+  const previous = explicitSpanSeed;
+  explicitSpanSeed = seed;
+  try {
+    return fn();
+  } finally {
+    explicitSpanSeed = previous;
+  }
+}
+
 function seededId(kind: "trace" | "span"): string {
   const hexChars = kind === "trace" ? TRACE_ID_HEX_CHARS : SPAN_ID_HEX_CHARS;
+  if (kind === "span" && explicitSpanSeed !== undefined) {
+    return deterministicSpanId(explicitSpanSeed);
+  }
   if (idSeed === undefined) return randomBytes(hexChars / 2).toString("hex");
   return createHash("sha256")
     .update(`${idSeed}:${kind}:${idCounter++}`)

@@ -27,6 +27,7 @@ const baseConfig: Config = {
   base_url: "https://cloud.langfuse.com",
   skill_tags: true,
   max_history_chars: 200_000,
+  incremental_export: false,
   debug: false,
   fail_on_error: false,
 };
@@ -64,7 +65,12 @@ const turnRoots = () =>
 
 async function convertAndMark(
   file: string,
-  options: { config: Config; stoppedTurnId?: string; parentSpanContext?: SpanContext },
+  options: {
+    config: Config;
+    stoppedTurnId?: string;
+    parentSpanContext?: SpanContext;
+    hookEvent?: string;
+  },
 ): Promise<string[]> {
   const exported = await convertRollout(file, options);
   for (const turnId of exported) await markTurnUploaded(file, turnId);
@@ -1243,5 +1249,213 @@ describe("attached mode (external parent span)", () => {
     exporter.reset();
     expect(await convertAndMark(file, { config: baseConfig, parentSpanContext })).toEqual([]);
     expect(exporter.getFinishedSpans()).toHaveLength(0);
+  });
+});
+
+describe("incremental_export mode", () => {
+  const incrementalConfig: Config = { ...baseConfig, incremental_export: true };
+
+  it("exports root, LLM steps, and tools incrementally without duplicates across hook events", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-inc-"));
+    const day = path.join(dir, "sessions", "2026", "06", "03");
+    fs.mkdirSync(day, { recursive: true });
+    const file = path.join(day, "rollout-inc.jsonl");
+    const ts = (n: number): string => `2026-06-03T21:00:${String(n).padStart(2, "0")}.000Z`;
+    const writeLines = (lines: unknown[]) =>
+      fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+
+    const step0Lines = [
+      { timestamp: ts(0), type: "session_meta", payload: { id: "sess-inc" } },
+      {
+        timestamp: ts(1),
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-inc" },
+      },
+      { timestamp: ts(1), type: "event_msg", payload: { type: "user_message", message: "Run ls" } },
+    ];
+
+    // 1. UserPromptSubmit -> root Codex Turn span emitted immediately
+    writeLines(step0Lines);
+    await convertRollout(file, { config: incrementalConfig, hookEvent: "UserPromptSubmit" });
+    const afterPrompt = exporter.getFinishedSpans();
+    expect(afterPrompt.map((s) => s.name)).toEqual(["Codex Turn"]);
+    expect(fs.existsSync(`${file}.langfuse`)).toBe(false);
+    expect(fs.existsSync(`${file}.langfuse.state`)).toBe(true);
+
+    // 2. PostModelRequest #1 -> step 0 LLM generation emitted (tool not finished yet)
+    exporter.reset();
+    const step1Lines = [
+      ...step0Lines,
+      {
+        timestamp: ts(2),
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          call_id: "call-inc-1",
+          arguments: '{"cmd":"ls"}',
+        },
+      },
+      {
+        timestamp: ts(3),
+        type: "token_usage_record",
+        payload: { usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } },
+      },
+    ];
+    writeLines(step1Lines);
+    await convertRollout(file, { config: incrementalConfig, hookEvent: "PostModelRequest" });
+    const afterModel1 = exporter.getFinishedSpans();
+    expect(afterModel1.filter((s) => obsType(s) === "generation")).toHaveLength(1);
+    expect(afterModel1.filter((s) => obsType(s) === "tool")).toHaveLength(0);
+
+    // 3. PostToolUse #1 -> tool span emitted, LLM step 0 is NOT re-emitted
+    exporter.reset();
+    const tool1Lines = [
+      ...step1Lines,
+      {
+        timestamp: ts(4),
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "CommandExecution",
+            id: "call-inc-1",
+            status: "completed",
+            exit_code: 0,
+            aggregated_output: "a.txt\n",
+            completed_at_ms: Date.parse(ts(4)),
+          },
+        },
+      },
+    ];
+    writeLines(tool1Lines);
+    await convertRollout(file, { config: incrementalConfig, hookEvent: "PostToolUse" });
+    const afterTool1 = exporter.getFinishedSpans();
+    expect(afterTool1.filter((s) => obsType(s) === "generation")).toHaveLength(0);
+    const tools = afterTool1.filter((s) => obsType(s) === "tool");
+    expect(tools).toHaveLength(1);
+    expect(attr(tools[0], "langfuse.observation.output")).toBe("a.txt\n");
+
+    // 4. PostModelRequest #2 + Stop -> LLM step 1 emitted, root updated with finalOutput, turn marked uploaded
+    exporter.reset();
+    const finalLines = [
+      ...tool1Lines,
+      {
+        timestamp: ts(5),
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Found a.txt" }],
+        },
+      },
+      {
+        timestamp: ts(5),
+        type: "token_usage_record",
+        payload: { usage: { input_tokens: 20, output_tokens: 6, total_tokens: 26 } },
+      },
+      {
+        timestamp: ts(6),
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "turn-inc" },
+      },
+    ];
+    writeLines(finalLines);
+    const exported = await convertAndMark(file, {
+      config: incrementalConfig,
+      stoppedTurnId: "turn-inc",
+      hookEvent: "Stop",
+    });
+    expect(exported).toEqual(["turn-inc"]);
+    const afterStop = exporter.getFinishedSpans();
+    expect(afterStop.filter((s) => obsType(s) === "generation")).toHaveLength(1);
+    expect(afterStop.filter((s) => obsType(s) === "tool")).toHaveLength(0);
+    const finalRoot = afterStop.find((s) => s.name === "Codex Turn")!;
+    expect(finalRoot).toBeDefined();
+    expect(attr(finalRoot, "langfuse.observation.output")).toBe("Found a.txt");
+    expect(fs.readFileSync(`${file}.langfuse`, "utf-8").trim()).toBe("turn-inc");
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does not save .langfuse.state when flush rejects so spans remain retryable", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-codex-inc-fail-"));
+    const day = path.join(dir, "sessions", "2026", "06", "03");
+    fs.mkdirSync(day, { recursive: true });
+    const file = path.join(day, "rollout-inc-fail.jsonl");
+    const ts = (n: number): string => `2026-06-03T22:00:${String(n).padStart(2, "0")}.000Z`;
+    fs.writeFileSync(
+      file,
+      [
+        { timestamp: ts(0), type: "session_meta", payload: { id: "sess-inc-fail" } },
+        {
+          timestamp: ts(1),
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "turn-f" },
+        },
+        { timestamp: ts(1), type: "event_msg", payload: { type: "user_message", message: "Hi" } },
+        {
+          timestamp: ts(2),
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Yo" }],
+          },
+        },
+        {
+          timestamp: ts(2),
+          type: "token_usage_record",
+          payload: { usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 } },
+        },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n") + "\n",
+    );
+
+    await expect(
+      convertRollout(file, {
+        config: incrementalConfig,
+        hookEvent: "PostModelRequest",
+        onFlush: async () => {
+          throw new Error("otlp down");
+        },
+      }),
+    ).rejects.toThrow(/otlp down/);
+
+    expect(fs.existsSync(`${file}.langfuse.state`)).toBe(false);
+
+    // Retry succeeds and exports the step
+    exporter.reset();
+    await convertRollout(file, {
+      config: incrementalConfig,
+      hookEvent: "PostModelRequest",
+      onFlush: async () => {},
+    });
+    expect(exporter.getFinishedSpans().filter((s) => obsType(s) === "generation")).toHaveLength(1);
+    expect(fs.existsSync(`${file}.langfuse.state`)).toBe(true);
+
+    // Verify subagent .langfuse.state is NOT persisted when onFlush fails
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("forwards onFlush into subagent incremental rollouts so subagent state waits for flush", async () => {
+    const dir = stageFixtures();
+    const parentFile = path.join(dir, "rollout-activity-main.jsonl");
+    const childFile = path.join(dir, "rollout-child-thread-act.jsonl");
+
+    await expect(
+      convertRollout(parentFile, {
+        config: incrementalConfig,
+        hookEvent: "Stop",
+        stoppedTurnId: "turn-act",
+        onFlush: async () => {
+          throw new Error("subagent flush boom");
+        },
+      }),
+    ).rejects.toThrow(/subagent flush boom/);
+
+    expect(fs.existsSync(`${childFile}.langfuse.state`)).toBe(false);
+    expect(fs.existsSync(`${parentFile}.langfuse.state`)).toBe(false);
   });
 });

@@ -133,6 +133,11 @@ export type EventMsgPayload = {
     kind?: string;
     agent_thread_id?: string;
     content?: MessageContentPart[];
+    status?: string;
+    exit_code?: number;
+    aggregated_output?: string;
+    started_at_ms?: number;
+    completed_at_ms?: number;
   } | null;
   new_thread_id?: string | null;
   event_id?: string;
@@ -163,6 +168,7 @@ export type HookInput = {
   turn_id?: string | null;
   transcript_path?: string | null;
   hook_event_name?: string;
+  prompt?: string | null;
 };
 
 export type SessionMeta = {

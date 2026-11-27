@@ -8,15 +8,28 @@ import {
   LangfuseOtelSpanAttributes,
   propagateAttributes,
   startObservation,
+  type LangfuseAgent,
   type LangfuseGenerationAttributes,
   type LangfuseObservation,
 } from "@langfuse/tracing";
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
-import { currentIdSeed, seedIds } from "./instrumentation.js";
+import {
+  currentIdSeed,
+  deterministicSpanId,
+  deterministicTraceId,
+  seedIds,
+  withSpanSeed,
+} from "./instrumentation.js";
 import { parseArgs, parseSession } from "./parse.js";
-import { loadUploadedTurnIds } from "./sidecar.js";
+import {
+  loadIncrementalState,
+  loadUploadedTurnIds,
+  saveIncrementalState,
+  type RolloutExportState,
+  type TurnExportState,
+} from "./sidecar.js";
 import { skillsForToolCall, traceTags } from "./skills.js";
 import type {
   EventMsgPayload,
@@ -557,7 +570,7 @@ async function emitTurn(
       );
 
       for (const tc of step.toolCalls) {
-        const observation = emitToolCall(tc, root, step.endTime);
+        const observation = emitToolCall(tc, root.otelSpan.spanContext(), step.endTime);
         if (tc.name === "spawn_agent") spawnObservations.set(tc.callId, observation);
       }
 
@@ -605,26 +618,258 @@ async function emitTurn(
 
 function emitToolCall(
   tc: ToolCall,
-  parent: LangfuseObservation,
+  parentContext: SpanContext,
   fallbackEnd: number,
+  spanSeed?: string,
 ): LangfuseObservation {
-  const tool = startObservation(
-    toolObservationName(tc),
-    {
-      input: tc.args,
-      output: tc.output != null ? toText(tc.output) : undefined,
-      level: tc.error ? "ERROR" : undefined,
-      statusMessage: tc.error,
-      metadata: { "codex.call_id": tc.callId, "codex.tool_name": tc.name || "tool" },
-    },
-    {
-      asType: "tool",
-      startTime: new Date(tc.startTime),
-      parentSpanContext: parent.otelSpan.spanContext(),
-    },
+  const tool = withSpanSeed(spanSeed, () =>
+    startObservation(
+      toolObservationName(tc),
+      {
+        input: tc.args,
+        output: tc.output != null ? toText(tc.output) : undefined,
+        level: tc.error ? "ERROR" : undefined,
+        statusMessage: tc.error,
+        metadata: { "codex.call_id": tc.callId, "codex.tool_name": tc.name || "tool" },
+      },
+      {
+        asType: "tool",
+        startTime: new Date(tc.startTime),
+        parentSpanContext: parentContext,
+      },
+    ),
   );
   tool.end(new Date(tc.endTime ?? fallbackEnd));
   return tool;
+}
+
+function isToolCallFinished(tc: ToolCall): boolean {
+  return tc.endTime !== undefined || tc.output !== undefined || tc.error !== undefined;
+}
+
+function isStepFinished(step: ModelStep, stepIndex: number, totalSteps: number): boolean {
+  return stepIndex < totalSteps - 1 || step.usage !== undefined;
+}
+
+async function emitTurnIncremental(
+  turn: Turn,
+  sessionMeta: SessionMeta,
+  ctx: {
+    config: Config;
+    rolloutFile: string;
+    parentSpanContext?: SpanContext;
+    attached?: boolean;
+    subagentIndex: SubagentIndex;
+    seenThreadIds: Set<string>;
+    unannouncedSubagents?: SubagentRollout[];
+    inheritableTurnIds?: ReadonlySet<string>;
+    historyPrefix?: ChatMlMessage[];
+    hookEvent?: string;
+    promptText?: string;
+    terminal: boolean;
+    turnState: TurnExportState;
+    incrementalState: RolloutExportState;
+    onFlush?: () => Promise<void>;
+  },
+): Promise<boolean> {
+  const isSubagent = sessionMeta.isSubagentThread === true;
+  const turnSeed = `${sessionMeta.sessionId}:${turn.turnId ?? "no-turn-id"}`;
+  const outerSeed = currentIdSeed();
+  seedIds(turnSeed);
+
+  const isInterrupted = turn.aborted || ctx.hookEvent === "Interrupt";
+  const shouldEmitRoot = !ctx.turnState.rootEmitted || ctx.terminal || isInterrupted;
+  const effectiveUserInput = turn.userInput ?? ctx.promptText;
+
+  let root: LangfuseAgent | undefined;
+  let traceId = ctx.parentSpanContext?.traceId ?? ctx.turnState.traceId;
+  let rootSpanId = ctx.turnState.rootSpanId;
+
+  if (shouldEmitRoot) {
+    root = withSpanSeed(`${turnSeed}:root`, () =>
+      startObservation(
+        isSubagent ? "Codex Subagent Turn" : "Codex Turn",
+        {
+          input: toMultimodalContent(effectiveUserInput, turn.userImages),
+          output: ctx.terminal || isInterrupted ? turn.finalOutput : undefined,
+          level: isInterrupted ? "WARNING" : undefined,
+          statusMessage: turn.aborted
+            ? "Turn interrupted by user"
+            : ctx.hookEvent === "Interrupt"
+              ? "Turn interrupted"
+              : undefined,
+          metadata: {
+            "codex.turn_id": turn.turnId,
+            "codex.thread_id": sessionMeta.sessionId,
+            "codex.model": turn.model,
+            "codex.reasoning_effort": turn.reasoningEffort,
+            "codex.model_provider": sessionMeta.modelProvider,
+            "codex.cli_version": sessionMeta.cliVersion,
+            "codex.aborted": isInterrupted,
+            "codex.tool_call_count": turn.steps.reduce((n, s) => n + s.toolCalls.length, 0),
+            ...(ctx.attached && ctx.parentSpanContext
+              ? {
+                  "codex.parent_trace_id": ctx.parentSpanContext.traceId,
+                  "codex.parent_span_id": ctx.parentSpanContext.spanId,
+                }
+              : {}),
+            ...(turn.systemPrompt ? systemPromptMetadata(turn.systemPrompt) : {}),
+            ...(turn.userImages.length ? { "codex.image_count": turn.userImages.length } : {}),
+            ...(turn.toolDefinitions.length
+              ? { "codex.tool_definition_count": turn.toolDefinitions.length }
+              : {}),
+          },
+        },
+        {
+          asType: "agent",
+          startTime: new Date(turn.startTime),
+          parentSpanContext: ctx.parentSpanContext,
+        },
+      ),
+    );
+    if (ctx.attached) {
+      root.otelSpan.setAttribute(LangfuseOtelSpanAttributes.IS_APP_ROOT, false);
+    }
+    const rootCtx = root.otelSpan.spanContext();
+    traceId = rootCtx.traceId;
+    rootSpanId = rootCtx.spanId;
+    ctx.turnState.rootEmitted = true;
+    ctx.turnState.traceId = traceId;
+    ctx.turnState.rootSpanId = rootSpanId;
+  }
+
+  const resolvedParentContext: SpanContext = {
+    traceId: traceId ?? deterministicTraceId(turnSeed),
+    spanId: rootSpanId ?? deterministicSpanId(`${turnSeed}:root`),
+    traceFlags: TraceFlags.SAMPLED,
+    isRemote: false,
+  };
+
+  let changed = shouldEmitRoot;
+  let failure: unknown;
+  try {
+    const systemMessage = systemPromptText(turn.systemPrompt);
+    const historyPrefix = ctx.historyPrefix ?? [];
+    const emittedSteps = new Set(ctx.turnState.emittedStepIndices);
+    const emittedTools = new Set(ctx.turnState.emittedToolCallIds);
+    const toolSpanIds = (ctx.turnState.toolCallSpanIds ??= {});
+    const user = userMessage(turn);
+    const turnMessages: ChatMlMessage[] = user ? [user] : [];
+
+    for (let i = 0; i < turn.steps.length; i++) {
+      const step = turn.steps[i];
+      if (
+        !emittedSteps.has(i) &&
+        (ctx.terminal || isInterrupted || isStepFinished(step, i, turn.steps.length))
+      ) {
+        const conversation = boundedConversation(
+          historyPrefix,
+          turnMessages,
+          ctx.config.max_history_chars,
+        );
+        const generation = withSpanSeed(`${turnSeed}:step:${i}`, () =>
+          startObservation(
+            isSubagent ? "LLM Subagent" : "LLM",
+            {
+              input: attachToolDefinitions(
+                generationInput(systemMessage, conversation),
+                turn.toolDefinitions,
+              ),
+              output: buildGenerationOutput(step),
+              model: turn.model,
+              ...(turn.reasoningEffort
+                ? { modelParameters: { reasoning_effort: turn.reasoningEffort } }
+                : {}),
+              usageDetails: toUsageDetails(step.usage),
+              metadata: {
+                "codex.step_index": i,
+                "codex.reasoning_effort": turn.reasoningEffort,
+              },
+            },
+            {
+              asType: "generation",
+              startTime: new Date(step.startTime),
+              parentSpanContext: resolvedParentContext,
+            },
+          ),
+        );
+        generation.end(new Date(generationEnd(step)));
+        ctx.turnState.emittedStepIndices.push(i);
+        emittedSteps.add(i);
+        changed = true;
+      }
+
+      for (const tc of step.toolCalls) {
+        if (
+          !emittedTools.has(tc.callId) &&
+          (ctx.terminal || isInterrupted || isToolCallFinished(tc))
+        ) {
+          const observation = emitToolCall(
+            tc,
+            resolvedParentContext,
+            step.endTime,
+            `${turnSeed}:tool:${tc.callId}`,
+          );
+          toolSpanIds[tc.callId] = observation.otelSpan.spanContext().spanId;
+          ctx.turnState.emittedToolCallIds.push(tc.callId);
+          emittedTools.add(tc.callId);
+          changed = true;
+        }
+      }
+
+      turnMessages.push(assistantMessage(step), ...toolMessages(step));
+    }
+
+    const shouldCheckSubagents = ctx.terminal || isInterrupted || ctx.hookEvent === "SubagentStop";
+    if (shouldCheckSubagents) {
+      const announced: SubagentRollout[] = [];
+      for (const threadId of turn.subagentThreadIds) {
+        const rollout = ctx.subagentIndex.byThread.get(threadId);
+        if (!rollout) {
+          debugLog(`subagent rollout not found for thread ${threadId}`);
+          continue;
+        }
+        announced.push(rollout);
+      }
+      for (const sub of [...announced, ...(ctx.unannouncedSubagents ?? [])]) {
+        if (ctx.seenThreadIds.has(sub.threadId)) continue;
+        ctx.seenThreadIds.add(sub.threadId);
+        const spawnCallId = turn.subagentSpawnCallIds[sub.threadId];
+        const spawnSpanId = spawnCallId ? toolSpanIds[spawnCallId] : undefined;
+        const subParentContext: SpanContext = {
+          traceId: resolvedParentContext.traceId,
+          spanId: spawnSpanId ?? resolvedParentContext.spanId,
+          traceFlags: TraceFlags.SAMPLED,
+          isRemote: false,
+        };
+        const seedBeforeChild = currentIdSeed();
+        await convertRollout(sub.file, {
+          config: ctx.config,
+          parentSpanContext: subParentContext,
+          subagentIndex: ctx.subagentIndex,
+          seenThreadIds: ctx.seenThreadIds,
+          ancestorTurnIds: ctx.inheritableTurnIds,
+          hookEvent: ctx.hookEvent,
+          onFlush: ctx.onFlush,
+        });
+        seedIds(seedBeforeChild);
+      }
+    }
+  } catch (error) {
+    failure = error;
+    debugLog(`failed to convert turn ${turn.turnId ?? "(no turn id)"}:`, error);
+    root?.update({
+      level: "ERROR",
+      statusMessage: `Trace conversion failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    });
+  }
+
+  root?.end(new Date(turn.endTime));
+  seedIds(outerSeed);
+  if (failure && ctx.config.fail_on_error) throw failure;
+  return changed;
 }
 
 function isFinal(
@@ -681,6 +926,10 @@ export async function convertRollout(
     seenThreadIds?: Set<string>;
     ancestorTurnIds?: ReadonlySet<string>;
     stoppedTurnId?: string;
+    hookEvent?: string;
+    promptText?: string;
+    /** Awaited before persisting incremental state so failed exports remain retryable. */
+    onFlush?: () => Promise<void>;
     /** Awaited after each exported turn, before the next one is converted. */
     onTurnExported?: (turnId: string) => Promise<void>;
   },
@@ -767,6 +1016,8 @@ export async function convertRollout(
   }
 
   const uploaded = await loadUploadedTurnIds(rolloutFile);
+  const incremental = options.config.incremental_export === true;
+  const incrementalState = incremental ? await loadIncrementalState(rolloutFile) : {};
   const exportedTurnIds: string[] = [];
   const attached = options.parentSpanContext != null;
 
@@ -775,8 +1026,21 @@ export async function convertRollout(
 
     if (skipInherited(turn, turnIndex)) continue;
 
-    if (!isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1)) {
-      debugLog(`skipping turn ${turn.turnId ?? "(no turn id)"}: not final`);
+    if (turn.turnId == null) {
+      debugLog("skipping turn (no turn id)");
+      continue;
+    }
+
+    const terminal = isFinal(turn, options.stoppedTurnId, turnIndex < turns.length - 1);
+    const activeTurnForHook =
+      incremental &&
+      options.hookEvent !== "Stop" &&
+      (options.stoppedTurnId == null ||
+        turn.turnId === options.stoppedTurnId ||
+        turnIndex === turns.length - 1);
+
+    if (!terminal && !activeTurnForHook) {
+      debugLog(`skipping turn ${turn.turnId}: not final`);
       continue;
     }
     if (uploaded.has(turn.turnId)) {
@@ -787,21 +1051,49 @@ export async function convertRollout(
       options.parentSpanContext ??
       (await seededTraceParent(options.config, sessionMeta, turnIndex + 1));
 
-    const emit = () =>
-      emitTurn(turn, sessionMeta, {
-        config: options.config,
-        rolloutFile,
-        parentSpanContext,
-        attached,
-        subagentIndex,
-        seenThreadIds,
-        unannouncedSubagents: subagentsFor(turnIndex),
-        inheritableTurnIds,
-        historyPrefix: historyPrefixes[turnIndex],
+    const turnState: TurnExportState =
+      incrementalState[turn.turnId] ??
+      (incrementalState[turn.turnId] = {
+        rootEmitted: false,
+        emittedStepIndices: [],
+        emittedToolCallIds: [],
       });
 
+    const emit = () =>
+      incremental
+        ? emitTurnIncremental(turn, sessionMeta, {
+            config: options.config,
+            rolloutFile,
+            parentSpanContext,
+            attached,
+            subagentIndex,
+            seenThreadIds,
+            unannouncedSubagents: subagentsFor(turnIndex),
+            inheritableTurnIds,
+            historyPrefix: historyPrefixes[turnIndex],
+            hookEvent: options.hookEvent,
+            promptText: options.promptText,
+            terminal,
+            turnState,
+            incrementalState,
+            onFlush: options.onFlush,
+          })
+        : emitTurn(turn, sessionMeta, {
+            config: options.config,
+            rolloutFile,
+            parentSpanContext,
+            attached,
+            subagentIndex,
+            seenThreadIds,
+            unannouncedSubagents: subagentsFor(turnIndex),
+            inheritableTurnIds,
+            historyPrefix: historyPrefixes[turnIndex],
+          });
+
+    let emittedSomething = true;
     if (attached) {
-      await emit();
+      const res = await emit();
+      if (typeof res === "boolean") emittedSomething = res;
     } else {
       const tags = traceTags(options.config, turn);
       await propagateAttributes(
@@ -812,13 +1104,23 @@ export async function convertRollout(
           ...(tags.length > 0 ? { tags } : {}),
           ...(options.config.metadata ? { metadata: options.config.metadata } : {}),
         },
-        emit,
+        async () => {
+          const res = await emit();
+          if (typeof res === "boolean") emittedSomething = res;
+        },
       );
     }
 
-    uploaded.add(turn.turnId);
-    exportedTurnIds.push(turn.turnId);
-    await options.onTurnExported?.(turn.turnId);
+    if (incremental && emittedSomething) {
+      await options.onFlush?.();
+      await saveIncrementalState(rolloutFile, incrementalState);
+    }
+
+    if (terminal) {
+      uploaded.add(turn.turnId);
+      exportedTurnIds.push(turn.turnId);
+      await options.onTurnExported?.(turn.turnId);
+    }
   }
 
   return exportedTurnIds;

@@ -687,3 +687,76 @@ describe("user prompt extraction", () => {
     expect(turns[0]!.userInput).toBe("sag mal hallo");
   });
 });
+
+describe("incremental rollout records", () => {
+  it("closes a step on token_usage_record before token_count arrives", () => {
+    const line = (ts: string, type: string, payload: Record<string, unknown>): RolloutLine =>
+      ({ timestamp: ts, type, payload }) as RolloutLine;
+
+    const { turns } = parseSession([
+      line("2026-06-03T18:00:00.000Z", "session_meta", { id: "s" }),
+      line("2026-06-03T18:00:01.000Z", "event_msg", { type: "task_started", turn_id: "t1" }),
+      line("2026-06-03T18:00:01.100Z", "event_msg", { type: "user_message", message: "hi" }),
+      line("2026-06-03T18:00:02.000Z", "response_item", {
+        type: "function_call",
+        name: "exec_command",
+        call_id: "c1",
+        arguments: '{"cmd":"echo hi"}',
+      }),
+      line("2026-06-03T18:00:02.500Z", "token_usage_record", {
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        turn_token_usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+      }),
+    ]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].completed).toBe(false);
+    expect(turns[0].steps).toHaveLength(1);
+    expect(turns[0].steps[0].endTime).toBe(Date.parse("2026-06-03T18:00:02.500Z"));
+    expect(turns[0].steps[0].usage).toEqual({
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 15,
+    });
+    expect(turns[0].totalUsage).toEqual({
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 15,
+    });
+  });
+
+  it("populates tool output, timing, and error from CommandExecution item_completed", () => {
+    const line = (ts: string, type: string, payload: Record<string, unknown>): RolloutLine =>
+      ({ timestamp: ts, type, payload }) as RolloutLine;
+
+    const { turns } = parseSession([
+      line("2026-06-03T18:00:00.000Z", "session_meta", { id: "s" }),
+      line("2026-06-03T18:00:01.000Z", "event_msg", { type: "task_started", turn_id: "t1" }),
+      line("2026-06-03T18:00:02.000Z", "response_item", {
+        type: "function_call",
+        name: "exec_command",
+        call_id: "c1",
+        arguments: '{"cmd":"false"}',
+      }),
+      line("2026-06-03T18:00:02.500Z", "token_usage_record", {
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+      }),
+      line("2026-06-03T18:00:03.000Z", "event_msg", {
+        type: "item_completed",
+        item: {
+          type: "CommandExecution",
+          id: "c1",
+          status: "failed",
+          exit_code: 1,
+          aggregated_output: "boom\n",
+          completed_at_ms: 1780480803123,
+        },
+      }),
+    ]);
+
+    const tool = turns[0].steps[0].toolCalls[0];
+    expect(tool.output).toBe("boom\n");
+    expect(tool.error).toBe("boom\n");
+    expect(tool.endTime).toBe(1780480803123);
+  });
+});

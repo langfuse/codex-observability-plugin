@@ -1,7 +1,7 @@
 import { getConfig } from "./config.js";
 import { setupInstrumentation } from "./instrumentation.js";
 import { readExternalParentSpanContext } from "./parent-context.js";
-import { markTurnUploaded } from "./sidecar.js";
+import { markTurnUploaded, withRolloutLock } from "./sidecar.js";
 import { convertRollout } from "./trace.js";
 import type { HookInput } from "./types.js";
 import { debugLog, readStdin, setDebug } from "./utils.js";
@@ -32,6 +32,12 @@ export async function runHook(): Promise<void> {
   setDebug(config.debug);
   failOnError = config.fail_on_error;
 
+  const hookEvent = hookInput.hook_event_name ?? "Stop";
+  if (!config.incremental_export && hookEvent !== "Stop") {
+    debugLog(`incremental_export disabled; ignoring ${hookEvent} hook`);
+    return;
+  }
+
   if (!config.enabled) {
     debugLog("tracing disabled (set TRACE_TO_LANGFUSE=true to enable)");
     return;
@@ -54,11 +60,14 @@ export async function runHook(): Promise<void> {
   const transcriptPath = hookInput.transcript_path;
   let failure: unknown;
 
-  try {
-    await convertRollout(transcriptPath, {
+  const runConvert = () =>
+    convertRollout(transcriptPath, {
       config,
       parentSpanContext,
-      stoppedTurnId: hookInput.turn_id ?? undefined,
+      stoppedTurnId: hookEvent === "Stop" ? (hookInput.turn_id ?? undefined) : undefined,
+      hookEvent,
+      promptText: hookInput.prompt ?? undefined,
+      onFlush: () => instrumentation.flush(),
       // Flush and record each turn before converting the next: a backlog is
       // delivered incrementally instead of all-or-nothing, and only one turn's
       // spans are held in memory at a time. Record delivery only after the
@@ -69,6 +78,16 @@ export async function runHook(): Promise<void> {
         await markTurnUploaded(transcriptPath, turnId);
       },
     });
+
+  try {
+    if (config.incremental_export) {
+      await withRolloutLock(transcriptPath, async () => {
+        await runConvert();
+        await instrumentation.flush();
+      });
+    } else {
+      await runConvert();
+    }
   } catch (error) {
     failure = error;
     debugLog("failed to convert rollout:", error);

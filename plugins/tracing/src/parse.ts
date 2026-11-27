@@ -144,6 +144,7 @@ export function parseSession(lines: RolloutLine[]): {
   let turn: MutableTurn | null = null;
   let step: ModelStep | null = null;
   let toolCallsById = new Map<string, ToolCall>();
+  const preliminaryOutputs = new WeakSet<ToolCall>();
   let lastTimestamp = Date.now();
 
   const developerMessages: string[] = [];
@@ -317,7 +318,10 @@ export function parseSession(lines: RolloutLine[]): {
         const out = p as unknown as ResponseItemFunctionCallOutput;
         const tc = toolCallsById.get(out.call_id);
         if (tc) {
-          if (tc.output == null) tc.output = out.output;
+          if (tc.output == null || preliminaryOutputs.has(tc)) {
+            tc.output = out.output;
+            preliminaryOutputs.delete(tc);
+          }
           tc.endTime = Math.max(tc.endTime ?? ts, ts);
           if (tc.name === "spawn_agent") {
             const spawned = parseArgs(toText(out.output));
@@ -358,6 +362,18 @@ export function parseSession(lines: RolloutLine[]): {
       continue;
     }
 
+    if (line.type === "token_usage_record") {
+      if (turn) {
+        const p = line.payload as {
+          usage?: TokenUsage | null;
+          turn_token_usage?: TokenUsage | null;
+        };
+        if (p.turn_token_usage) turn.totalUsage = p.turn_token_usage;
+        closeStep(ts, p.usage ?? undefined);
+      }
+      continue;
+    }
+
     if (line.type === "event_msg") {
       const p = line.payload as EventMsgPayload;
       const et = p.type;
@@ -380,6 +396,26 @@ export function parseSession(lines: RolloutLine[]): {
       } else if (et === "item_completed" && p.item?.type === "SubAgentActivity") {
         if (p.item.kind === "started" && typeof p.item.agent_thread_id === "string") {
           recordSubagentThread(p.item.agent_thread_id, p.item.id);
+        }
+      } else if (et === "item_completed" && p.item?.type === "CommandExecution") {
+        const tc = typeof p.item.id === "string" ? toolCallsById.get(p.item.id) : undefined;
+        if (tc) {
+          const endMs =
+            typeof p.item.completed_at_ms === "number" && Number.isFinite(p.item.completed_at_ms)
+              ? p.item.completed_at_ms
+              : ts;
+          tc.endTime = Math.max(tc.endTime ?? endMs, endMs);
+          if (
+            p.item.status === "failed" ||
+            p.item.status === "declined" ||
+            (typeof p.item.exit_code === "number" && p.item.exit_code !== 0)
+          ) {
+            tc.error ??= extractToolError(p.item as EventMsgPayload);
+          }
+          if (tc.output == null && p.item.aggregated_output !== undefined) {
+            tc.output = p.item.aggregated_output;
+            preliminaryOutputs.add(tc);
+          }
         }
       } else if (et === "agent_message" && typeof p.message === "string") {
         turn!.lastAgentMessage = p.message;
